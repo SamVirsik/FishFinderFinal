@@ -1,0 +1,138 @@
+{% extends "index.html" %}
+
+{% block title %}Map{% endblock %}
+
+{% block main_content %}
+
+<!-- Main Map Section -->
+<div class="main" id="map-page">
+    <div id="map"></div>
+    
+    <!-- Sidebar -->
+    <div id="sidebar" class="sidebar">
+        <h3>Map Layers</h3>
+        {% for layer in map_layers%}
+            <div id="map-layer-{{layer['id']}}">
+                <!-- Analysis Dropdown -->
+                <label for="analysis-dropdown">Analysis:</label>
+                <select id="analysis-dropdown-{{layer['id']}}" class="dropdown">
+                    <option value="heatmap">Heatmap</option>
+                    <option value="heatmap-granular">Heatmap Granular</option>
+                    <option value="contour">Contour</option>
+                    <option value="hillshade">Hillshade</option>
+                    <option value="colored-hillshade">Colored Hillshade</option>
+                    <option value="texture-shade">Texture Shading</option>
+                    <option value="flow-exposure">Flow-Exposure Model</option>
+                    <option value="slope-magnitude">Slope Magnitude</option>
+                    <option value="spot-finder">Spot Finder</option>
+                </select>
+
+                <!-- Smoothness Input -->
+                <label for="smoothness-{{layer['id']}}">Smoothness:</label>
+                <input type="number" id="smoothness-{{layer['id']}}" min="1" max="100" value="1" class="dropdown">
+
+                <!-- Layer Width Dropdown -->
+                <label for="layer-width-dropdown-{{layer['id']}}">Layer Width:</label>
+                <select id="layer-width-dropdown-{{layer['id']}}" class="dropdown">
+                    <option value="0.25">0.25</option>
+                    <option value="0.5">0.5</option>
+                    <option value="1">1</option>
+                    <option value="1.5">1.5</option>
+                    <option value="2" selected>2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="7">7</option>
+                    <option value="10">10</option>
+                    <option value="15">15</option>
+                    <option value="20">20</option>
+                    <option value="25">25</option>
+                    <option value="35">35</option>
+                    <option value="50">50</option>
+                </select>
+
+                <!-- ▼ NEW – Data Source selector (add just after Layer Width) -->
+                <label for="data-source-dropdown-{{layer['id']}}">Data Source:</label>
+                <select id="data-source-dropdown-{{layer['id']}}" class="dropdown">
+                    <option value="dem-tiles"        selected>DEM Mosaic (good overall)</option>
+                    <option value="bag-bathymetry">BAG Bathymetry (limited high-res, up-to-date)</option>
+                    <option value="multibeam">Deep Water Multibeam (limited, situational)</option>
+                    <option value="crm-mosaic">Coastal Relief (complete, less granular, date variable)</option>
+                    <option value="dem-all">Best Coastal Stitched Together</option>
+                    <option value="dem-global">Global Data</option>
+                </select>
+                <!-- ▲ NEW -->
+
+                <button id="reload-layer-button-{{layer['id']}}">Reload</button>
+
+                <!-- Opacity Slider -->
+                <label for="opacity-{{layer['id']}}">Opacity:</label>
+                <input type="range" id="opacity-{{layer['id']}}" min="0" max="100" value="75">
+
+                <!-- Resolution Slider -->
+                <label for="resolution-{{layer['id']}}">Resolution:</label>
+                <input type="range" id="resolution-{{layer['id']}}" min="64" max="1024" value="256">
+                <span id="res-value">256</span>
+            </div>
+        {% endfor %}
+    </div>
+
+    <!-- Toggle Button -->
+    <button id="toggle-sidebar" class="toggle-sidebar">☰</button>
+
+
+    <dialog id="goto-dialog">
+    <h3>Go To Spot</h3>
+    <label>
+        Latitude:
+        <input id="goto-lat" type="number" step="any" placeholder="24.713">
+    </label><br>
+    <label>
+        Longitude:
+        <input id="goto-lon" type="number" step="any" placeholder="-81.083">
+    </label><br>
+    <button id="goto-submit">Go</button>
+    <button id="goto-cancel">Cancel</button>
+    </dialog>
+    <!-- ――― end GO TO SPOT UI ――― -->
+
+    <!-- ▸▸▸  BEGIN: Go-To-Spot button – bottom-left, compact  ▸▸▸ -->
+    <style>
+    #goto-spot-btn-container {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        z-index: 1200;
+    }
+
+    #goto-spot-btn {
+        display: inline-block;
+        padding: 8px 14px;
+        background: #005f9e;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 16px;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+
+    #goto-spot-btn:hover {
+        background: #0072c6;
+    }
+    </style>
+
+    <div id="goto-spot-btn-container">
+    <button id="goto-spot-btn">Go To Spot</button>
+    </div>
+    <!-- ▸▸▸  END: Go-To-Spot button – bottom-left, compact  ▸▸▸ -->
+
+</div>
+
+<script src="https://js.arcgis.com/4.26/"></script>
+<script>
+    const map_layers = {{map_layers | tojson}};
+</script>
+<script src="static/map.js"></script>
+
+{% endblock %}

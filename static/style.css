@@ -1,0 +1,346 @@
+:root {
+  --primary-blue: #005f99; /* Darker main blue */
+  --secondary-blue: #004a73; /* Even darker for accents */
+  --hover-blue: #003a5c; /* Darker hover color */
+  --white: #ffffff; /* Unchanged */
+  --hazy-white: rgba(255, 255, 255, 0.8); /* Unchanged */
+  --text-color: #1d1d1d; /* Darker text for better contrast with lighter backgrounds */
+  --shadow-color: rgba(0, 0, 0, 0.2); /* Slightly darker shadow */
+  --dark-shadow-color: rgba(0, 0, 0, 0.4); /* Slightly darker for stronger emphasis */
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  color: var(--text-color);
+}
+
+/* .main-content {
+  margin: 0;
+  padding-top: 0px;
+  box-sizing: border-box;
+} */
+
+/* Navbar styling */
+.navbar {
+  display: flex;
+  flex-wrap: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1000; /* Ensures the navbar appears above other content */
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--primary-blue);
+  padding: 0px 30px;
+  margin: 0;
+  color: var(--white);
+  box-shadow: 0 4px 6px var(--shadow-color);
+  height:80px;
+}
+
+.navbar .brand {
+  font-size: 36px;
+  font-weight: bold;
+  width: fit-content;
+}
+
+.navbar .search-bar {
+  flex: 1;
+  margin: 15px 20px;
+  display: flex;
+  align-items: left;
+  padding: 0 20px;
+}
+
+.navbar .search-bar input {
+  width: 50vw;
+  padding: 10px 20px;
+  margin-left: 50px;
+  border: none;
+  border-radius: 8px;
+  font-size: 24px;
+}
+
+button {
+  margin-left: 10px;
+  padding: 10px 15px;
+  background-color: var(--secondary-blue);
+  border: none;
+  color: var(--white);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 30px;
+}
+
+button:hover {
+  background-color: var(--hover-blue);
+}
+
+.links {
+  display: flex;
+  align-items: center; /* Vertically center text within the links */
+  justify-content: center; /* Horizontally center text */
+  padding: 0 15px; /* Horizontal padding for spacing */
+  height: 100%; /* Make links stretch to full navbar height */
+  /* background-color: var(--primary-blue); */
+  cursor: pointer;
+  border-radius:8px;
+}
+
+.links:hover {
+  background-color: var(--hover-blue);
+}
+
+/* Links text */
+.navbar a {
+  color: var(--white);
+  text-decoration: none;
+  font-size: 30px;
+  padding: 0 25px;
+  font-weight: normal;
+  display: block; /* Ensure the text inside takes up the full area */
+  height: 100%; /* Full height for clickable area */
+  line-height: 80px; /* Match the navbar height for vertical centering */
+}
+
+.brand a {
+  font-size: 36px;
+  padding: 10px;
+}
+
+/* Dropdown menu styling */
+.links.dropdown {
+  position: relative; /* Needed to position the dropdown menu relative to this container */
+}
+
+.links.dropdown .dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%; /* Align the dropdown below the parent link */
+  left: 0; /* Align with the left edge of the parent link */
+  width: 100%; /* Match the width of the parent `.links.dropdown` */
+  background-color: var(--primary-blue);
+  padding: 10px 0; /* Adjust vertical padding inside the dropdown */
+  border-radius: 5px;
+  box-shadow: 0 4px 6px var(--shadow-color);
+  z-index: 1000; /* Ensure dropdown appears above other elements */
+}
+
+.links.dropdown .dropdown-menu a {
+  display: block;
+  color: var(--white);
+  text-decoration: none;
+  padding: 10px 15px; /* Add padding for clickable area */
+  font-size: 24px;
+  text-align: center;
+}
+
+.links.dropdown .dropdown-menu a:hover {
+  background-color: var(--hover-blue);
+}
+
+.links.dropdown:hover .dropdown-menu {
+  display: block;
+}
+
+/* Main container with map */
+.main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  position: relative; /* Required for absolutely positioned toolbar */
+}
+
+#map {
+  width: 100%;
+  height: 100vh;
+  border: none;
+}
+
+/* Buttons */
+.btn {
+  background-color: var(--primary-blue);
+  color: var(--white);
+  padding: 10px 15px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background-color: var(--secondary-blue);
+}
+
+/* Modal */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.8);
+}
+
+.modal-content {
+  background-color: var(--white);
+  margin: 15% auto;
+  padding: 20px;
+  border-radius: 8px;
+  width: 50%;
+  text-align: center;
+}
+
+.modal input {
+  width: 80%;
+  padding: 10px;
+  margin: 10px 0;
+  border: 1px solid var(--shadow-color);
+  border-radius: 5px;
+}
+
+.close {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.close:hover,
+.close:focus {
+  color: var(--text-color);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* Toolbar styling */
+.toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background-color: var(--white);
+  padding: 12px;
+  border: 1px solid var(--shadow-color);
+  border-radius: 8px;
+  opacity: 0.5;
+  transition: opacity 0.3s ease;
+  z-index: 999; /* Ensures it appears above the map */
+  font-size: 20px;
+  max-width: fit-content;
+}
+
+.toolbar.debug {
+  top: 90px;
+}
+
+.toolbar:hover {
+  opacity: 1; /* Full opacity on hover */
+}
+
+.toolbar label {
+  margin-left: 15px;
+  font-weight: bold;
+}
+
+#res-value {
+  display: inline-block;
+  width: 2em; /* enough space for up to “10” or “99” */
+  text-align: right; /* optional: align text neatly on the right */
+  margin-right: 15px;
+}
+
+.toolbar input[type="range"] {
+  width: 150px;
+  accent-color: var(--secondary-blue);
+}
+
+#resolution {
+  margin-top: 10px;
+}
+
+.dropdown {
+  font-size: 20px;
+}
+
+#reload-layer-button {
+  font-size: 24px;
+  margin-left: 20px;
+  margin-right: 15px;
+  padding: 7px 10px;
+}
+
+/* Sidebar */
+.sidebar {
+  position: fixed;
+  top: 80px; /* Place the sidebar below the navbar */
+  right: 0;
+  width: 400px;
+  height: calc(100% - 80px); /* Adjust height to exclude the navbar */
+  background-color: var(--white);
+  box-shadow: -4px 0 6px var(--shadow-color);
+  padding: 20px;
+  overflow-y: auto;
+  z-index: 1000;
+  transform: translateX(0); /* Sidebar is visible by default */
+  transition: transform 0.3s ease; /* Smooth slide-in/out animation */
+}
+
+.sidebar.hidden {
+  transform: translateX(100%); /* Hide the sidebar offscreen */
+}
+
+/* Toggle Button */
+.toggle-sidebar {
+  position: fixed;
+  top: 90px;
+  right: 440px;
+  background-color: var(--primary-blue);
+  color: var(--white);
+  border: none;
+  padding: 10px 15px;
+  border-radius: 5px;
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 1100; /* Ensure it appears above the sidebar */
+  transition: transform 0.3s ease, background-color 0.3s ease;
+}
+
+.toggle-sidebar.hidden {
+  transform: translateX(440px); /* Move the button along with the sidebar */
+}
+
+.toggle-sidebar:hover {
+  background-color: var(--hover-blue);
+}
+
+/* Sidebar Header */
+.sidebar h3 {
+  font-size: 24px;
+  color: var(--primary-blue);
+  margin-bottom: 20px;
+}
+
+/* Dropdowns and Inputs */
+.sidebar label {
+  display: block;
+  font-size: 16px;
+  margin-top: 15px;
+  color: var(--text-color);
+}
+
+.sidebar select,
+.sidebar input[type="number"],
+.sidebar input[type="range"] {
+  width: 100%;
+  margin-top: 5px;
+  margin-bottom: 15px;
+  padding: 8px;
+  border: 1px solid var(--shadow-color);
+  border-radius: 5px;
+  font-size: 16px;
+}

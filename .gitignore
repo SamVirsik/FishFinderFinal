@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Flask runtime
+flask_session/
+
+# Generated tile / NOAA caches (recreated by app.py)
+img/tile/
+img/noaa/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Claude Code local state
+.claude/
