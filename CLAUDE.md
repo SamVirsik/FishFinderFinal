@@ -83,8 +83,10 @@ single algorithm.
   `app.py` clears them on startup and shutdown.
 - A Flask filesystem session lives in `flask_session/` once the app runs;
   also safe to delete.
-- The main analysis dispatch is the if/elif ladder in `LayerGenerator.make_image`.
-  When adding a new analysis: add the function to `analyses.py`, add a branch
-  in `make_image`, and add an `<option>` in `templates/map.html`.
-- When adding a new data source: add an `elif` branch in `_source_spec` and an
-  `<option>` in the data-source dropdown in `templates/map.html`.
+- The main analysis dispatch is the `ANALYSES` dict at the bottom of
+  `src/analyses.py`. When adding a new analysis: add the function (signature
+  `(df, width, **kwargs) -> PIL.Image`), register it in `ANALYSES`, and add an
+  `<option>` in `templates/map.html`.
+- When adding a new data source: add a branch in `_source_spec` in
+  `src/LayerGeneration.py` and an `<option>` in the data-source dropdown in
+  `templates/map.html`.

@@ -1,5 +1,6 @@
 import os
-import time
+import threading
+from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
 
@@ -8,10 +9,13 @@ import pandas as pd
 import requests
 from PIL import Image
 
-from src.analyses import *
+from src.analyses import ANALYSES
 
 
-class GPSBounds():
+HTTP_TIMEOUT_S = 30
+
+
+class GPSBounds:
     def __init__(self, extent=None, lonmin=0, latmax=0, latmin=0, lonmax=0):
         if isinstance(extent, dict):
             self.latmin = extent['latmin']
@@ -19,10 +23,7 @@ class GPSBounds():
             self.lonmin = extent['lonmin']
             self.lonmax = extent['lonmax']
         elif isinstance(extent, list):
-            self.lonmin = extent[0]
-            self.lonmax = extent[1]
-            self.latmin = extent[2]
-            self.latmax = extent[3]
+            self.lonmin, self.lonmax, self.latmin, self.latmax = extent
         elif isinstance(extent, GPSBounds):
             self.lonmin = extent.lonmin
             self.lonmax = extent.lonmax
@@ -33,275 +34,266 @@ class GPSBounds():
             self.latmax = latmax
             self.lonmin = lonmin
             self.lonmax = lonmax
+
     def noaabox(self):
-        return str(self.lonmin)+','+str(self.latmin)+','+str(self.lonmax)+','+str(self.latmax)
-    def array(self): #lon_min, lat_max, lon_max, lat_min
+        return f"{self.lonmin},{self.latmin},{self.lonmax},{self.latmax}"
+
+    def array(self):
         return [self.lonmin, self.lonmax, self.latmin, self.latmax]
+
     def __str__(self):
-        return f"GPSBounds(Longitude: {self.lonmin} - {self.lonmax}, Latitude {self.latmin} - {self.latmax})"
+        return (f"GPSBounds(Longitude: {self.lonmin} - {self.lonmax}, "
+                f"Latitude {self.latmin} - {self.latmax})")
 
 
-class LayerGenerator():
+@dataclass(frozen=True)
+class RenderConfig:
+    """Immutable snapshot of the renderer's state for a single tile request."""
+    gps: GPSBounds
+    resolution: int
+    analysis: str
+    width: float
+    roll: int
+    data_source: str
+
+    def size_param(self) -> str:
+        xmin, xmax, ymin, ymax = self.gps.array()
+        # Guard against degenerate boxes (would make height = 0 or div-by-zero).
+        dx = xmax - xmin
+        dy = ymax - ymin
+        if dx <= 0 or dy <= 0:
+            return f"{self.resolution},{self.resolution}"
+        height = max(1, int(self.resolution * dy / dx))
+        return f"{self.resolution},{height}"
+
+
+def _source_spec(cfg: RenderConfig):
+    """
+    Endpoint + query params for the active data source.
+    To add a source: append an `elif`, then list it in the front-end dropdown.
+    """
+    bbox = cfg.gps.noaabox()
+    size = cfg.size_param()
+    common = {
+        "bbox": bbox,
+        "bboxSR": "4326",
+        "imageSR": "4326",
+        "size": size,
+        "format": "tiff",
+        "f": "image",
+    }
+
+    if cfg.data_source == "dem-tiles":
+        url = ('https://gis.ngdc.noaa.gov/arcgis/rest/services/'
+               'DEM_mosaics/DEM_tiles_mosaic/ImageServer/exportImage')
+        return url, common
+
+    if cfg.data_source == "bag-bathymetry":
+        url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/bag_bathymetry/ImageServer/exportImage"
+        return url, {**common,
+                     "renderingRule": '{"rasterFunction":"None"}',
+                     "noData": 0,
+                     "noDataInterpretation": "esriNoDataMatchAny",
+                     "compression": "LZ77"}
+
+    if cfg.data_source == "multibeam":
+        url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/multibeam_mosaic/ImageServer/exportImage"
+        return url, {**common,
+                     "pixelType": "F32",
+                     "noData": -32768,
+                     "noDataInterpretation": "esriNoDataMatchAny",
+                     "compression": "LERC"}
+
+    if cfg.data_source == "crm-mosaic":
+        url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/CRM_mosaic/ImageServer/exportImage"
+        return url, {**common,
+                     "pixelType": "F32",
+                     "noData": -9999,
+                     "noDataInterpretation": "esriNoDataMatchAny",
+                     "compression": "LERC"}
+
+    if cfg.data_source == "dem-all":
+        url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_all/ImageServer/exportImage"
+        return url, {**common,
+                     "pixelType": "F32",
+                     "noData": -9999,
+                     "compression": "LERC"}
+
+    if cfg.data_source == "dem-global":
+        url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_global_mosaic/ImageServer/exportImage"
+        return url, {**common,
+                     "pixelType": "F32",
+                     "noData": -9999,
+                     "compression": "LERC"}
+
+    if cfg.data_source == "fknms-multibeam":
+        url = ("https://gis.ngdc.noaa.gov/arcgis/rest/services/"
+               "nccos/FKNMS_multibeam_dem/ImageServer/exportImage")
+        return url, {**common,
+                     "pixelType": "F32",
+                     "noData": -32768,
+                     "compression": "LERC"}
+
+    # Unknown source — fall back to default.
+    url = ('https://gis.ngdc.noaa.gov/arcgis/rest/services/'
+           'DEM_mosaics/DEM_tiles_mosaic/ImageServer/exportImage')
+    return url, common
+
+
+def _fetch_raster(cfg: RenderConfig):
+    """Hit the NOAA ImageServer and return a PIL.Image, or None on failure."""
+    url, params = _source_spec(cfg)
+    try:
+        response = requests.get(url, params=params, timeout=HTTP_TIMEOUT_S)
+    except requests.RequestException as e:
+        print(f"[NOAA] request failed: {e}")
+        return None
+
+    if response.status_code != 200:
+        print(f"[NOAA] HTTP {response.status_code} for {cfg.data_source}")
+        return None
+
+    if "image" not in response.headers.get("Content-Type", ""):
+        print(f"[NOAA] unexpected content-type: {response.headers.get('Content-Type')!r}")
+        return None
+
+    try:
+        image = Image.open(BytesIO(response.content))
+        image.load()
+        return image
+    except Exception as e:
+        print(f"[NOAA] could not decode raster: {e}")
+        return None
+
+
+def _load_cached_raster(cache_file):
+    if not cache_file or not os.path.exists(cache_file):
+        return None
+    try:
+        image = Image.open(cache_file)
+        image.load()
+        return image
+    except Exception as e:
+        print(f"[cache] could not load {cache_file}: {e}")
+        return None
+
+
+def _raster_to_dataframe(image):
+    """Coerce a PIL image into a 2-D float DataFrame, or return None."""
+    arr = np.asarray(image)
+    if arr.ndim == 3:
+        # Some endpoints return RGB previews rather than single-band float —
+        # nothing useful we can do with that as a depth grid.
+        return None
+    return pd.DataFrame(arr)
+
+
+class LayerGenerator:
+    """
+    Holds the active rendering configuration. Tile-render entry points snapshot
+    the config under a lock so concurrent requests can render in parallel
+    without racing on shared state.
+    """
+
     def __init__(self):
-        self.analysis_method = "Heatmap"
+        self.analysis_method = "heatmap"
         self.roll = 1
         self.width = 0.5
         self.resolution = 1024
         self.data_source = "dem-tiles"
         self.GPS = GPSBounds()
+        self._lock = threading.Lock()
 
-    def calculate_size(self, max_width):
-        xmin, xmax, ymin, ymax = self.GPS.array()
-        aspect_ratio = (xmax - xmin) / (ymax - ymin)
-        width = max_width
-        height = int(width / aspect_ratio)
-        return f"{width},{height}"
-
-    def set_sizing(self):
-        self.size_parameter = self.calculate_size(self.resolution)
+    # -- mutators (called from /reload-layer and /tile setup) ----------------
 
     def set_resolution(self, res=None):
-        if res is None:
-            res = self.resolution
-        self.resolution = res
-        self.set_sizing()
+        with self._lock:
+            if res is not None:
+                self.resolution = int(res)
 
     def set_analysis(self, selection):
-        self.analysis_method = selection
+        with self._lock:
+            self.analysis_method = selection
 
     def set_roll(self, roll):
-        self.roll = roll
+        with self._lock:
+            self.roll = roll
 
     def set_width(self, width):
-        self.width = width
+        with self._lock:
+            self.width = width
 
     def set_gps_bounds(self, extent):
-        self.set_GPS(GPSBounds(extent))
+        with self._lock:
+            self.GPS = GPSBounds(extent)
 
     def set_GPS(self, gps):
-        self.GPS = gps
+        with self._lock:
+            self.GPS = GPSBounds(gps)
 
     def set_data_source(self, source):
-        """Switch the active NOAA endpoint; clears the depth cache when the source actually changes."""
-        if source != self.data_source:
-            self.sample_depth.cache_clear()
-        self.data_source = source
+        """Switch the active NOAA endpoint; clears the depth cache on change."""
+        with self._lock:
+            if source != self.data_source:
+                self.sample_depth.cache_clear()
+            self.data_source = source
 
-    def load_data(self, cache_file, debug_prints=False, event=None):
-        self.image = self.make_image(cache_file, debug_prints)
-        return self.image
+    # -- render --------------------------------------------------------------
 
-    def _source_spec(self):
-        """
-        Decide which endpoint to hit and which extra parameters to
-        send.  Tweak by commenting lines in/out or adding new `elif`
-        blocks.  Return (url, extra_params_dict).
-        """
-        if self.data_source == "dem-tiles":
-            # --- DEM Mosaic (default) -----------------------------
-            url = 'https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_tiles_mosaic/ImageServer/exportImage'
-            params = {
-                'bbox': self.GPS.noaabox(),
-                'size': self.size_parameter, 
-                'bboxSR': '4326', 
-                'imageSR': '4326',
-                'format': 'tiff', 
-                'f': 'image' 
-            }
+    def snapshot(self, gps=None) -> RenderConfig:
+        """Atomic copy of the current config, optionally with an override bbox."""
+        with self._lock:
+            return RenderConfig(
+                gps=GPSBounds(gps) if gps is not None else GPSBounds(self.GPS),
+                resolution=self.resolution,
+                analysis=self.analysis_method,
+                width=self.width,
+                roll=self.roll,
+                data_source=self.data_source,
+            )
 
-        elif self.data_source == "bag-bathymetry":
-            url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/bag_bathymetry/ImageServer/exportImage"
-            params = {
-                "bbox"     : self.GPS.noaabox(),
-                "bboxSR"   : "4326",
-                "imageSR"  : "4326",
-                "size"     : self.size_parameter,      # e.g. "4096,4096"
-                "format"   : "tiff",
-                "renderingRule":
-                    '{"rasterFunction":"None"}',       # URL-encode if you build the URL manually
-                "noData"   : 0,
-                "noDataInterpretation": "esriNoDataMatchAny",
-                "compression": "LZ77",
-                "f"        : "image"
-            }
-        
-        elif self.data_source == "multibeam":
-            url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/multibeam_mosaic/ImageServer/exportImage"
-            params = {
-                "bbox"     : self.GPS.noaabox(),
-                "bboxSR"   : "4326",
-                "imageSR"  : "4326",
-                "size"     : self.size_parameter,
-                "format"   : "tiff",
-                "pixelType": "F32",
-                "noData"   : -32768,
-                "noDataInterpretation": "esriNoDataMatchAny",
-                "compression": "LERC",
-                "f"        : "image"
-            }
-
-        
-        elif self.data_source == "crm-mosaic":
-            url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/CRM_mosaic/ImageServer/exportImage"
-            params = {
-                "bbox"     : self.GPS.noaabox(),
-                "bboxSR"   : "4326",
-                "imageSR"  : "4326",
-                "size"     : self.size_parameter,
-                "format"   : "tiff",
-                "pixelType": "F32",
-                "noData"   : -9999,
-                "noDataInterpretation": "esriNoDataMatchAny",
-                "compression": "LERC",
-                "f"        : "image"
-            }
-        
-        elif self.data_source == "dem-all":
-            # --- NCEI Best-available Coastal DEMs mosaic ------------------------
-            url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_all/ImageServer/exportImage"
-            params = {
-                "bbox"     : self.GPS.noaabox(),
-                "bboxSR"   : "4326",
-                "imageSR"  : "4326",
-                "size"     : self.size_parameter,
-                "format"   : "tiff",
-                "pixelType": "F32",        # 32-bit float depths/elevations
-                "noData"   : -9999,
-                "compression": "LERC",
-                "f"        : "image"
-            }
-        
-        elif self.data_source == "dem-global":
-            # --- Global 1-arc-sec (≈30 m) mosaic -------------------------------
-            url = "https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_global_mosaic/ImageServer/exportImage"
-            params = {
-                "bbox"     : self.GPS.noaabox(),
-                "bboxSR"   : "4326",
-                "imageSR"  : "4326",
-                "size"     : self.size_parameter,
-                "format"   : "tiff",
-                "pixelType": "F32",
-                "noData"   : -9999,
-                "compression": "LERC",
-                "f"        : "image"
-            }
-        
-        elif self.data_source == "fknms-multibeam":
-            # NCCOS Florida Keys multibeam DEM Mosaic (2–5 m)
-            url = ("https://gis.ngdc.noaa.gov/arcgis/rest/services/"
-                "nccos/FKNMS_multibeam_dem/ImageServer/exportImage")
-
-            params = {
-                "bbox"     : self.GPS.noaabox(),   # lonmin,latmin,lonmax,latmax
-                "bboxSR"   : "4326",
-                "imageSR"  : "4326",
-                "size"     : self.size_parameter,  # e.g. "1024,1024"
-                "format"   : "tiff",               # ImageServer honors this ✔
-                "pixelType": "F32",                # 32-bit float depths
-                "noData"   : -32768,
-                "compression": "LERC",
-                "f"        : "image"
-            }
-
-        
-
-
-        
-
-        # ►► ADD MORE SOURCES BY COPYING THIS elif TEMPLATE ◄◄
-        # elif self.data_source == "gebco-2023":
-        #     url = "https://www.gebco.net/foobar/exportImage"
-        #     params = {
-        #         "something": "value",
-        #     }
-
-        else:   # fallback
-            url = ("https://gis.ngdc.noaa.gov/arcgis/rest/services/"
-                    "DEM_mosaics/DEM_tiles_mosaic/ImageServer/exportImage")
-            params = {}
-
-        return url, params
-    # ──────────────────────────────────────────────────────────────
-
-    def handle_calls(self, url, params):
-        if self.data_source == "bluetopo":
-            response = requests.get(url, stream=True)
-            if response.status_code != 200:
-                print(f"Failed to fetch BlueTopo tile: {response.status_code}")
+    def render(self, cfg: RenderConfig, cache_file=None):
+        """Produce the colorized PIL image for `cfg`. Returns None on failure."""
+        image = _load_cached_raster(cache_file)
+        if image is None:
+            image = _fetch_raster(cfg)
+            if image is None:
                 return None
-            return BytesIO(response.content)
-        else:
-            response = requests.get(url, params=params)
-            return response
-        
-
-
-    def make_image(self, cache_file, debug_prints=False):
-        start_time = time.time()
-
-        url, params = self._source_spec()
-        try:
-            response = self.handle_calls(url, params=params)
-        except Exception:
-            return None
-
-        if debug_prints:
-            print("Retrieve data", f"{time.time() - start_time}")
-
-        image = None
-        if response.status_code == 200:
-            content_type = response.headers.get("Content-Type", "")
-            if "image" not in content_type:
-                print(f"Unexpected content type: {content_type}")
-                print(f"Response content: {response.text}")
-            else:
+            if cache_file:
                 try:
-                    image = Image.open(BytesIO(response.content))
-                    image.load()
+                    image.save(cache_file)
                 except Exception as e:
-                    image = None
-                    print(f"Error loading image: {e}")
-        else:
-            print(f"Failed to load data. Status code: {response.status_code}")
+                    print(f"[cache] could not write {cache_file}: {e}")
 
-        if image is not None:
-            image.save(cache_file)
-            image_array = np.array(image)
-            df = pd.DataFrame(image_array)
-
-            curr_method = self.analysis_method.lower()
-            width = self.width
-
-            if curr_method == 'heatmap':
-                img = seaborn_heat_map(df, width)
-            elif curr_method == 'heatmap-granular':
-                img = granular_heat_map(df, width)
-            elif curr_method == 'contour':
-                img = contour_map(df, width)
-            elif curr_method == 'hillshade':
-                img = hillshade(df, width)
-            elif curr_method == 'colored-hillshade':
-                img = colored_hillshade(df, width)
-            elif curr_method == 'texture-shade':
-                img = textureshade(df, width)
-            elif curr_method == 'flow-exposure':
-                img = flow_exposure(df, width)
-            elif curr_method == 'slope-magnitude':
-                img = slope_magnitude(df, width)
-            elif curr_method == 'spot-finder':
-                img = spot_finder(df, width)
-
-            if debug_prints:
-                print("Process image", f"{time.time() - start_time}")
-            return img
-        else:
+        df = _raster_to_dataframe(image)
+        if df is None:
+            print(f"[render] non-2D raster from {cfg.data_source}; skipping")
             return None
 
-    # Returns metres at a single lat/lon (negative = water, positive = land).
-    # Cache is cleared in set_data_source() so values never mix across sources.
+        analysis = ANALYSES.get(cfg.analysis.lower())
+        if analysis is None:
+            print(f"[render] unknown analysis {cfg.analysis!r}")
+            return None
+
+        try:
+            return analysis(df, cfg.width)
+        except Exception as e:
+            print(f"[render] {cfg.analysis} failed: {e}")
+            return None
+
+    # Backwards-compat shim used by the existing tile route. New code should
+    # call .snapshot()/.render() directly.
+    def load_data(self, cache_file=None, gps=None):
+        cfg = self.snapshot(gps=gps)
+        return self.render(cfg, cache_file=cache_file)
+
+    # -- point sampling -------------------------------------------------------
+
     @lru_cache(maxsize=20_000)
-    def sample_depth(self, lat: float, lon: float) -> float | None:
-        export_url, base_params = self._source_spec()
+    def sample_depth(self, lat: float, lon: float):
+        """Metres at a single lat/lon (negative = water, positive = land)."""
+        cfg = self.snapshot()
+        export_url, base_params = _source_spec(cfg)
         sample_url = export_url.rsplit("/", 1)[0] + "/getSamples"
 
         params = {
@@ -321,5 +313,5 @@ class LayerGenerator():
             sample = r.json()["samples"][0]["value"]
             return None if sample is None else float(sample)
         except Exception as e:
-            print(f"[sample_depth] {self.data_source} query failed: {e}")
+            print(f"[sample_depth] {cfg.data_source} query failed: {e}")
             return None

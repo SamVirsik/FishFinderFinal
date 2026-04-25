@@ -60,6 +60,7 @@
                     <option value="crm-mosaic">Coastal Relief (complete, less granular, date variable)</option>
                     <option value="dem-all">Best Coastal Stitched Together</option>
                     <option value="dem-global">Global Data</option>
+                    <option value="fknms-multibeam">Florida Keys Multibeam (2–5 m)</option>
                 </select>
                 <!-- ▲ NEW -->
 
@@ -72,7 +73,7 @@
                 <!-- Resolution Slider -->
                 <label for="resolution-{{layer['id']}}">Resolution:</label>
                 <input type="range" id="resolution-{{layer['id']}}" min="64" max="1024" value="256">
-                <span id="res-value">256</span>
+                <span id="res-value-{{layer['id']}}">256</span>
             </div>
         {% endfor %}
     </div>

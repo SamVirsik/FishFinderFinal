@@ -297,33 +297,24 @@ require([
         };
         const extent_string = JSON.stringify(extentData);
 
-        //fetch("/reload-layer/"+extent_string+"_"+ document.getElementById("resolution-0").value +"_"+ document.getElementById("analysis-dropdown-0").value +"_"+document.getElementById("smoothness-0").value + "_"+ document.getElementById("layer-width-dropdown-0").value);
-            fetch("/reload-layer/"
+        fetch("/reload-layer/"
           + extent_string + "_"
           + document.getElementById("resolution-0").value + "_"
           + document.getElementById("analysis-dropdown-0").value + "_"
           + document.getElementById("smoothness-0").value + "_"
           + document.getElementById("layer-width-dropdown-0").value + "_"
-          + datasource);                 // NEW final segment
-        // Remove old layer(s)
+          + datasource);
+        // Swap in a fresh tile layer so the browser drops cached tiles.
         map.removeAll();
-        // Create a fresh layer
         depthTileLayer = createDepthTileLayer();
-        // Add it to the map
         map.add(depthTileLayer);
-        
-        // Add event listener to the opacity range input
-        map_layers.forEach((layer) => {
-            document.getElementById(`opacity-${layer['id']}`).addEventListener("input", function(event) {
-                const opacityValue = event.target.value / 100.0; // Convert to a value between 0 and 1
-                depthTileLayer.opacity = opacityValue;
-            });
-        });
     }
     map_layers.forEach((layer) => {
-        // Reload button listener
         document.getElementById(`reload-layer-button-${layer['id']}`).addEventListener("click", () => {
             reloadLayer();
+        });
+        document.getElementById(`opacity-${layer['id']}`).addEventListener("input", (event) => {
+            depthTileLayer.opacity = event.target.value / 100.0;
         });
     });
   });
