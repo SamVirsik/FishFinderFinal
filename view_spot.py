@@ -17,13 +17,12 @@ from pathlib import Path
 
 import requests
 import tifffile as tiff
-import pandas as pd
 from PIL import Image
 import matplotlib.pyplot as plt
 
 # ---- 1. bring in the existing colour-ramp renderer ------------------
 from src.FishFinderTools import zeroToOneFifty
-from src.analyses import colored_hillshade
+from src.analyses import color_relief
 
 # ---- 2. user-tunable parameters -------------------------------------
 #   (lat_max, lon_min)  = north-west corner
@@ -93,15 +92,20 @@ def main() -> None:
         print("Download failed:", exc)
         sys.exit(1)
 
-    # ---- 3. convert to DataFrame ------------------------------------
-    dem_array = tiff.imread(io.BytesIO(tiff_bytes))
-    df = pd.DataFrame(dem_array)
-    n_rows, n_cols = df.shape
+    # ---- 3. convert to ndarray --------------------------------------
+    dem_array = tiff.imread(io.BytesIO(tiff_bytes)).astype("float32")
+    n_rows, n_cols = dem_array.shape
+
+    # Approximate metres-per-pixel from the bbox at the centre latitude.
+    # NOAA's exportImage uses 4326 (degrees), so this is just a quick
+    # great-circle conversion good enough for the visual preview.
+    mid_lat = 0.5 * (LAT_MAX + LAT_MIN)
+    deg_per_px_lon = (LON_MAX - LON_MIN) / n_cols
+    cellsize_m = deg_per_px_lon * 111_320.0 * math.cos(math.radians(mid_lat))
 
     # ---- 4. colourise with the existing helper ----------------------
     print("Converting depth matrix → RGB image …")
-    #rgb_img: Image.Image = zeroToOneFifty(df, n_rows, n_cols)
-    rgb_img: Image.Image = colored_hillshade(df, 0.675, azimuth=315.0, altitude=40.0, ambient=0.05)
+    rgb_img: Image.Image = color_relief(dem_array, cellsize_m, param=8)
 
     # ---- 5. show it & (optionally) save -----------------------------
     print("Displaying – close the window to exit.")

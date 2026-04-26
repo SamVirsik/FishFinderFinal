@@ -11,6 +11,8 @@ flask_session/
 # Generated tile / NOAA caches (recreated by app.py)
 img/tile/
 img/noaa/
+img/raster/
+img/_blank.png
 
 # OS / editor
 .DS_Store

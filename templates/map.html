@@ -1,133 +1,130 @@
 {% extends "index.html" %}
 
-{% block title %}Map{% endblock %}
+{% block title %}FishFinder{% endblock %}
 
 {% block main_content %}
 
-<!-- Main Map Section -->
-<div class="main" id="map-page">
+<div class="workspace">
     <div id="map"></div>
-    
-    <!-- Sidebar -->
-    <div id="sidebar" class="sidebar">
-        <h3>Map Layers</h3>
-        {% for layer in map_layers%}
-            <div id="map-layer-{{layer['id']}}">
-                <!-- Analysis Dropdown -->
-                <label for="analysis-dropdown">Analysis:</label>
-                <select id="analysis-dropdown-{{layer['id']}}" class="dropdown">
-                    <option value="heatmap">Heatmap</option>
-                    <option value="heatmap-granular">Heatmap Granular</option>
-                    <option value="contour">Contour</option>
-                    <option value="hillshade">Hillshade</option>
-                    <option value="colored-hillshade">Colored Hillshade</option>
-                    <option value="texture-shade">Texture Shading</option>
-                    <option value="flow-exposure">Flow-Exposure Model</option>
-                    <option value="slope-magnitude">Slope Magnitude</option>
-                    <option value="spot-finder">Spot Finder</option>
-                </select>
 
-                <!-- Smoothness Input -->
-                <label for="smoothness-{{layer['id']}}">Smoothness:</label>
-                <input type="number" id="smoothness-{{layer['id']}}" min="1" max="100" value="1" class="dropdown">
+    <button id="panel-toggle" class="panel-toggle" aria-label="Toggle controls">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
 
-                <!-- Layer Width Dropdown -->
-                <label for="layer-width-dropdown-{{layer['id']}}">Layer Width:</label>
-                <select id="layer-width-dropdown-{{layer['id']}}" class="dropdown">
-                    <option value="0.25">0.25</option>
-                    <option value="0.5">0.5</option>
-                    <option value="1">1</option>
-                    <option value="1.5">1.5</option>
-                    <option value="2" selected>2</option>
-                    <option value="3">3</option>
-                    <option value="4">4</option>
-                    <option value="5">5</option>
-                    <option value="7">7</option>
-                    <option value="10">10</option>
-                    <option value="15">15</option>
-                    <option value="20">20</option>
-                    <option value="25">25</option>
-                    <option value="35">35</option>
-                    <option value="50">50</option>
-                </select>
+    {% for layer in map_layers %}
+    <aside id="control-panel" class="panel">
+        <button class="panel-close" id="panel-close" aria-label="Hide controls">×</button>
+        <div class="panel-header">
+            <h2>Layer Controls</h2>
+            <p class="panel-sub">Choose a visualization, then press Apply.</p>
+        </div>
 
-                <!-- ▼ NEW – Data Source selector (add just after Layer Width) -->
-                <label for="data-source-dropdown-{{layer['id']}}">Data Source:</label>
-                <select id="data-source-dropdown-{{layer['id']}}" class="dropdown">
-                    <option value="dem-tiles"        selected>DEM Mosaic (good overall)</option>
-                    <option value="bag-bathymetry">BAG Bathymetry (limited high-res, up-to-date)</option>
-                    <option value="multibeam">Deep Water Multibeam (limited, situational)</option>
-                    <option value="crm-mosaic">Coastal Relief (complete, less granular, date variable)</option>
-                    <option value="dem-all">Best Coastal Stitched Together</option>
-                    <option value="dem-global">Global Data</option>
-                    <option value="fknms-multibeam">Florida Keys Multibeam (2–5 m)</option>
-                </select>
-                <!-- ▲ NEW -->
-
-                <button id="reload-layer-button-{{layer['id']}}">Reload</button>
-
-                <!-- Opacity Slider -->
-                <label for="opacity-{{layer['id']}}">Opacity:</label>
-                <input type="range" id="opacity-{{layer['id']}}" min="0" max="100" value="75">
-
-                <!-- Resolution Slider -->
-                <label for="resolution-{{layer['id']}}">Resolution:</label>
-                <input type="range" id="resolution-{{layer['id']}}" min="64" max="1024" value="256">
-                <span id="res-value-{{layer['id']}}">256</span>
+        <div class="panel-section">
+            <div class="field-row">
+                <label class="field-label" for="analysis-dropdown-{{layer['id']}}">Visualization</label>
+                <span class="pending-tag" id="pending-analysis-{{layer['id']}}">Pending</span>
             </div>
-        {% endfor %}
+            <select id="analysis-dropdown-{{layer['id']}}" class="select">
+                <option value="color-relief" selected>Color Relief — depth + shading</option>
+                <option value="depth">Depth Map — smooth gradient</option>
+                <option value="depth-bands">Depth Bands — stepped + contours</option>
+                <option value="hillshade">Hillshade — pure shaded relief</option>
+                <option value="slope">Slope — true steepness (degrees)</option>
+                <option value="aspect">Aspect — slope direction</option>
+                <option value="roughness">Roughness — wreck/ledge finder</option>
+                <option value="fishing-spots">Fishing Spots — slope-aware highlights</option>
+            </select>
+            <p class="field-hint" id="analysis-hint-{{layer['id']}}"></p>
+        </div>
+
+        <div class="panel-section">
+            <div class="field-row">
+                <label class="field-label" for="data-source-dropdown-{{layer['id']}}">Bathymetry Source</label>
+                <span class="pending-tag" id="pending-source-{{layer['id']}}">Pending</span>
+            </div>
+            <select id="data-source-dropdown-{{layer['id']}}" class="select">
+                <option value="dem-tiles" selected>Default DEM Mosaic — broad coverage</option>
+                <option value="dem-all">Stitched Coastal — best near shore</option>
+                <option value="fknms-multibeam">Florida Keys 2–5 m — highest detail</option>
+                <option value="bag-bathymetry">BAG — high-res, sparse coverage</option>
+                <option value="multibeam">Deep-Water Multibeam — offshore</option>
+                <option value="crm-mosaic">Coastal Relief — coarse, complete</option>
+                <option value="dem-global">Global Bathymetry — worldwide</option>
+            </select>
+        </div>
+
+        <div class="panel-section">
+            <div class="field-row">
+                <label class="field-label" for="resolution-{{layer['id']}}">Source Detail</label>
+                <span class="field-value" id="res-value-{{layer['id']}}">512</span>
+            </div>
+            <input type="range" id="resolution-{{layer['id']}}" min="256" max="1024" step="128" value="512" class="slider">
+            <div class="field-row">
+                <p class="field-hint inline">Pixels of source data per tile.</p>
+                <span class="pending-tag" id="pending-resolution-{{layer['id']}}">Pending</span>
+            </div>
+        </div>
+
+        <div class="panel-section">
+            <div class="field-row">
+                <label class="field-label" for="param-{{layer['id']}}" id="param-label-{{layer['id']}}">Parameter</label>
+                <span class="field-value" id="param-value-{{layer['id']}}">—</span>
+            </div>
+            <input type="range" id="param-{{layer['id']}}" class="slider">
+            <p class="field-hint" id="param-hint-{{layer['id']}}"></p>
+        </div>
+
+        <div class="panel-section">
+            <div class="field-row">
+                <label class="field-label" for="opacity-{{layer['id']}}">Layer Opacity</label>
+                <span class="field-value" id="opacity-value-{{layer['id']}}">75%</span>
+            </div>
+            <input type="range" id="opacity-{{layer['id']}}" min="0" max="100" value="75" class="slider">
+        </div>
+
+        <div class="panel-actions">
+            <button class="ghost-btn" id="reset-btn-{{layer['id']}}" disabled>Reset</button>
+            <button class="apply-btn" id="apply-btn-{{layer['id']}}" disabled>Up to date</button>
+        </div>
+
+        <div id="loading-indicator" class="loading-indicator" aria-live="polite">
+            <span class="loading-dot"></span>
+            <span class="loading-text">Loading tiles…</span>
+        </div>
+    </aside>
+    {% endfor %}
+
+    <div id="depth-card" class="depth-card hidden" role="dialog" aria-label="Location info">
+        <button class="depth-close" id="depth-close" aria-label="Close">×</button>
+        <div class="depth-label">Depth</div>
+        <div class="depth-value" id="depth-value">—</div>
+        <div class="depth-coord" id="depth-coord">—</div>
+        <div class="depth-actions">
+            <button class="ghost-btn" id="depth-copy">Copy coordinates</button>
+        </div>
     </div>
 
-    <!-- Toggle Button -->
-    <button id="toggle-sidebar" class="toggle-sidebar">☰</button>
+    <button id="goto-spot-btn" class="floating-btn" aria-label="Go to coordinates">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 0-8 8c0 5.5 8 12 8 12s8-6.5 8-12a8 8 0 0 0-8-8z"/></svg>
+        <span>Jump to coordinates</span>
+    </button>
 
-
-    <dialog id="goto-dialog">
-    <h3>Go To Spot</h3>
-    <label>
-        Latitude:
-        <input id="goto-lat" type="number" step="any" placeholder="24.713">
-    </label><br>
-    <label>
-        Longitude:
-        <input id="goto-lon" type="number" step="any" placeholder="-81.083">
-    </label><br>
-    <button id="goto-submit">Go</button>
-    <button id="goto-cancel">Cancel</button>
+    <dialog id="goto-dialog" class="goto-dialog">
+        <h3>Jump to coordinates</h3>
+        <p class="dialog-hint">Decimal degrees, e.g. <code>24.713, -81.083</code></p>
+        <label class="dialog-field">
+            <span>Latitude</span>
+            <input id="goto-lat" type="number" step="any" placeholder="24.713">
+        </label>
+        <label class="dialog-field">
+            <span>Longitude</span>
+            <input id="goto-lon" type="number" step="any" placeholder="-81.083">
+        </label>
+        <div class="dialog-actions">
+            <button class="ghost-btn" id="goto-cancel">Cancel</button>
+            <button class="apply-btn" id="goto-submit">Jump</button>
+        </div>
     </dialog>
-    <!-- ――― end GO TO SPOT UI ――― -->
-
-    <!-- ▸▸▸  BEGIN: Go-To-Spot button – bottom-left, compact  ▸▸▸ -->
-    <style>
-    #goto-spot-btn-container {
-        position: fixed;
-        bottom: 20px;
-        left: 20px;
-        z-index: 1200;
-    }
-
-    #goto-spot-btn {
-        display: inline-block;
-        padding: 8px 14px;
-        background: #005f9e;
-        color: white;
-        border: none;
-        border-radius: 6px;
-        font-size: 16px;
-        cursor: pointer;
-        white-space: nowrap;
-    }
-
-    #goto-spot-btn:hover {
-        background: #0072c6;
-    }
-    </style>
-
-    <div id="goto-spot-btn-container">
-    <button id="goto-spot-btn">Go To Spot</button>
-    </div>
-    <!-- ▸▸▸  END: Go-To-Spot button – bottom-left, compact  ▸▸▸ -->
-
 </div>
 
 <script src="https://js.arcgis.com/4.26/"></script>

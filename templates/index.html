@@ -4,51 +4,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}FishFinder{% endblock %}</title>
-    <!-- ArcGIS CSS -->
-    <link rel="stylesheet" href="https://js.arcgis.com/4.26/esri/themes/light/main.css">
-    <!-- Custom CSS -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://js.arcgis.com/4.26/esri/themes/dark/main.css">
     <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-    <!-- Navbar -->
-    <div class="navbar">
-        <div class="brand"><a href="/">FishFinder</a></div>
-        <div class="search-bar">
-            <input type="text" placeholder="Search for locations..." id="search-input">
-            <button id="search-button">Search</button>
+    <header class="topbar">
+        <a class="brand" href="/">
+            <span class="brand-mark"></span>
+            <span class="brand-name">FishFinder</span>
+        </a>
+        <div class="search">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="search-input" placeholder="Search a place, reef, or city">
         </div>
-        <div class="links">
-            <a href="/map" id="map-link">Map</a>
-        </div>
-        <div class="links dropdown">
-            <a href="/about-us" id="about-link">About ▼</a>
-            <div class="dropdown-menu">
-                <a href="/about-us">About Us</a>
-                <a href="/services">Services</a>
-                <a href="/team">Team</a>
-                <a href="/contact-us">Contact Us</a>
-            </div>
-        </div>
-        
-        <div class="links">
-            <a href="#" id="login-link">Login</a>
-        </div>
-    </div>
-    
-    <div class="main-content">
-        {% block main_content %} {% endblock %}
-    </div>
+    </header>
 
-    <!-- Login Modal -->
-    <div id="login-modal" class="modal">
-        <div class="modal-content">
-            <span class="close" id="login-close">&times;</span>
-            <h2>Login to FishFinder</h2>
-            <input type="text" placeholder="Username">
-            <input type="password" placeholder="Password">
-            <button class="btn">Login</button>
-        </div>
-    </div>
+    <main class="app">
+        {% block main_content %}{% endblock %}
+    </main>
+
     <script src="static/main.js"></script>
 </body>
 </html>
