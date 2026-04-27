@@ -347,11 +347,6 @@ require([
         $resolution.classList.toggle("pending", d.resolution);
 
         const dirty = d.analysis || d.source || d.resolution;
-        if ($apply.classList.contains("loading")) {
-            // Loading state owns the button text/disabled until the
-            // load completes. Don't fight it here.
-            return;
-        }
         if (dirty) {
             $apply.disabled = false;
             $apply.classList.add("pending");
@@ -447,10 +442,6 @@ require([
                 }
                 currentLayer = newLayer;
 
-                // Loading completed — release the Apply button.
-                $apply.classList.remove("loading");
-                syncControlState();
-
                 // The on-screen tiles are now in the canvas LRU. Warm
                 // adjacent zooms in the background so the next zoom is
                 // a cache hit instead of a NOAA round trip.
@@ -468,23 +459,14 @@ require([
         cancelPrefetch();
         committed = { ...draft };
 
-        // Lock the Apply button in a "loading" state while the cutover
-        // load runs, so syncControlState doesn't immediately re-enable
-        // it just because draft == committed.
-        $apply.classList.remove("pending");
-        $apply.classList.add("loading");
-        $apply.disabled = true;
-        $apply.textContent = "Loading…";
-        $reset.disabled = true;
-
-        // Pending tags clear immediately — the user has committed, even
-        // though the tiles haven't drawn yet.
-        $pendingAnalysis.classList.remove("visible");
-        $pendingSource.classList.remove("visible");
-        $pendingRes.classList.remove("visible");
-        $analysis.classList.remove("pending");
-        $source.classList.remove("pending");
-        $resolution.classList.remove("pending");
+        // Update controls to reflect the new committed state. With
+        // draft == committed, syncControlState will set the button to
+        // "Up to date"/disabled. The instant the user changes a dropdown
+        // again it'll snap back to "Apply changes" — clicking again
+        // supersedes the in-flight load via pendingApplyId. Rendering
+        // feedback lives on the bottom-of-panel $loading indicator,
+        // not on the Apply button.
+        syncControlState();
 
         applyConfig(committed, "cutover");
     }
@@ -596,10 +578,9 @@ require([
     let prefetchTimer     = null;
 
     async function runPrefetch() {
-        if (prefetchInFlight)                       return;
-        if (!view.extent || !committed)             return;
-        if (isDirtyMajor())                         return;
-        if ($apply.classList.contains("loading"))   return;
+        if (prefetchInFlight)            return;
+        if (!view.extent || !committed)  return;
+        if (isDirtyMajor())              return;
 
         const myToken = ++prefetchToken;
         const cfg = { ...committed };
@@ -829,29 +810,214 @@ require([
     });
 
 
-    // ─── Search ────────────────────────────────────────────
-    const $search = document.getElementById("search-input");
-    async function moveMapTo(placeName) {
-        const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?SingleLine=${encodeURIComponent(placeName)}&f=json`;
-        try {
-            const resp = await fetch(url);
-            const data = await resp.json();
-            if (!data.candidates || !data.candidates.length) return;
-            const cand = data.candidates[0];
-            const loc  = cand.location;
-            if (cand.extent) {
-                const center = [
-                    (cand.extent.xmin + cand.extent.xmax) / 2,
-                    (cand.extent.ymin + cand.extent.ymax) / 2,
-                ];
-                await view.goTo({ center, zoom: 11 });
-            } else {
-                await view.goTo({ center: [loc.x, loc.y], zoom: 12 });
-            }
-        } catch (err) { console.error(err); }
+    // ─── Search w/ autocomplete ────────────────────────────
+    // ArcGIS World Geocoder, anonymous tier — free, no API key.
+    // /suggest gives lightweight typeahead candidates (with magicKey),
+    // findAddressCandidates resolves a magicKey to a precise location.
+    const GEOCODE_BASE   = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer";
+    const KEYS_CENTER    = "-81.2,24.85";              // proximity bias toward Florida Keys (soft — global results still allowed)
+    const SUGGEST_DEBOUNCE_MS = 180;
+    const MAX_SUGGESTIONS     = 6;
+
+    const $search      = document.getElementById("search-input");
+    const $suggestList = document.getElementById("search-suggestions");
+    const $searchClear = document.getElementById("search-clear");
+
+    let suggestSeq          = 0;     // monotonic — latest /suggest fetch wins
+    let resolveSeq          = 0;     // monotonic — latest magicKey resolve wins
+    let currentSuggestions  = [];
+    let activeIdx           = -1;
+    let suggestTimer        = null;
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => (
+            { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+        ));
     }
+
+    function setExpanded(open) {
+        $suggestList.hidden = !open;
+        $search.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    function closeSuggest() {
+        setExpanded(false);
+        currentSuggestions = [];
+        activeIdx = -1;
+    }
+
+    function renderSuggestions(items) {
+        currentSuggestions = items;
+        activeIdx = -1;
+        if (!items.length) {
+            $suggestList.innerHTML = `<li class="search-suggestion empty">No results</li>`;
+        } else {
+            $suggestList.innerHTML = items.map((it, i) =>
+                `<li class="search-suggestion" data-idx="${i}" role="option">${escapeHtml(it.text)}</li>`
+            ).join("");
+        }
+        setExpanded(true);
+    }
+
+    function setActive(idx) {
+        const els = $suggestList.querySelectorAll(".search-suggestion[data-idx]");
+        if (!els.length) return;
+        activeIdx = Math.max(0, Math.min(idx, els.length - 1));
+        els.forEach(el => el.classList.remove("active"));
+        els[activeIdx].classList.add("active");
+        els[activeIdx].scrollIntoView({ block: "nearest" });
+    }
+
+    async function fetchSuggestions(text) {
+        const seq = ++suggestSeq;
+        const params = new URLSearchParams({
+            text,
+            f: "json",
+            maxSuggestions: String(MAX_SUGGESTIONS),
+            location: KEYS_CENTER,
+        });
+        try {
+            const resp = await fetch(`${GEOCODE_BASE}/suggest?${params}`);
+            if (seq !== suggestSeq) return;
+            const data = await resp.json();
+            if (seq !== suggestSeq) return;
+            renderSuggestions(data.suggestions || []);
+        } catch (err) {
+            if (seq !== suggestSeq) return;
+            console.error("suggest failed:", err);
+            closeSuggest();
+        }
+    }
+
+    function pickZoomForExtent(extent) {
+        if (!extent) return 13;
+        const dx = Math.abs(extent.xmax - extent.xmin);
+        const dy = Math.abs(extent.ymax - extent.ymin);
+        const span = Math.max(dx, dy);
+        if (span > 1.5)   return 8;   // state / large region
+        if (span > 0.5)   return 10;  // metro
+        if (span > 0.1)   return 12;  // city
+        if (span > 0.02)  return 14;  // neighborhood
+        return 16;                    // single address
+    }
+
+    async function jumpToCandidate(cand) {
+        const lon  = cand.location.x;
+        const lat  = cand.location.y;
+        const zoom = pickZoomForExtent(cand.extent);
+        const point = new Point({ longitude: lon, latitude: lat });
+        await view.goTo({ center: [lon, lat], zoom });
+        lookupDepth(lat, lon, point);
+    }
+
+    async function resolveAndJump(suggestion) {
+        const seq = ++resolveSeq;
+        $search.value = suggestion.text;
+        $searchClear.hidden = false;
+        closeSuggest();
+        const params = new URLSearchParams({
+            f: "json",
+            magicKey: suggestion.magicKey,
+            maxLocations: "1",
+        });
+        try {
+            const resp = await fetch(`${GEOCODE_BASE}/findAddressCandidates?${params}`);
+            if (seq !== resolveSeq) return;
+            const data = await resp.json();
+            if (seq !== resolveSeq) return;
+            const cand = (data.candidates || [])[0];
+            if (!cand) return;
+            await jumpToCandidate(cand);
+        } catch (err) {
+            if (seq !== resolveSeq) return;
+            console.error("resolve failed:", err);
+        }
+    }
+
+    // Fallback: user hits Enter before /suggest results arrive.
+    async function directSearch(text) {
+        const seq = ++resolveSeq;
+        closeSuggest();
+        const params = new URLSearchParams({
+            SingleLine: text,
+            f: "json",
+            maxLocations: "1",
+            location: KEYS_CENTER,
+        });
+        try {
+            const resp = await fetch(`${GEOCODE_BASE}/findAddressCandidates?${params}`);
+            if (seq !== resolveSeq) return;
+            const data = await resp.json();
+            if (seq !== resolveSeq) return;
+            const cand = (data.candidates || [])[0];
+            if (!cand) return;
+            await jumpToCandidate(cand);
+        } catch (err) {
+            if (seq !== resolveSeq) return;
+            console.error("direct search failed:", err);
+        }
+    }
+
+    $search.addEventListener("input", () => {
+        const q = $search.value.trim();
+        $searchClear.hidden = !q;
+        clearTimeout(suggestTimer);
+        if (!q) { closeSuggest(); return; }
+        suggestTimer = setTimeout(() => fetchSuggestions(q), SUGGEST_DEBOUNCE_MS);
+    });
+
     $search.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && e.target.value.trim()) moveMapTo(e.target.value);
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if ($suggestList.hidden && $search.value.trim()) {
+                fetchSuggestions($search.value.trim());
+                return;
+            }
+            setActive(activeIdx + 1);
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive(activeIdx <= 0 ? 0 : activeIdx - 1);
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            const q = $search.value.trim();
+            if (activeIdx >= 0 && currentSuggestions[activeIdx]) {
+                resolveAndJump(currentSuggestions[activeIdx]);
+            } else if (currentSuggestions.length > 0) {
+                resolveAndJump(currentSuggestions[0]);
+            } else if (q) {
+                directSearch(q);
+            }
+        } else if (e.key === "Escape") {
+            closeSuggest();
+            $search.blur();
+        }
+    });
+
+    // mousedown — fires before the input's blur, so we don't lose the click
+    $suggestList.addEventListener("mousedown", (e) => {
+        const li = e.target.closest(".search-suggestion[data-idx]");
+        if (!li) return;
+        e.preventDefault();
+        const idx = parseInt(li.dataset.idx, 10);
+        if (currentSuggestions[idx]) resolveAndJump(currentSuggestions[idx]);
+    });
+
+    $search.addEventListener("focus", () => {
+        const q = $search.value.trim();
+        if (q && currentSuggestions.length === 0) fetchSuggestions(q);
+        else if (currentSuggestions.length > 0) setExpanded(true);
+    });
+
+    $search.addEventListener("blur", () => {
+        // delay so suggestion-click mousedown has a chance to land first
+        setTimeout(closeSuggest, 120);
+    });
+
+    $searchClear.addEventListener("click", () => {
+        $search.value = "";
+        $searchClear.hidden = true;
+        closeSuggest();
+        $search.focus();
     });
 
 
