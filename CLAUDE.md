@@ -88,12 +88,19 @@ img/
    sees the old dataset masquerading as the new). In `overlap` mode (used
    only for live param drags — same data, same algorithm) the new layer
    sits on top of the old until its tiles arrive.
-2. ArcGIS calls `RasterAnalysisLayer.fetchTile(level, row, col)` for each
-   visible tile. The layer constructs the raster URL and calls
-   `getRenderedCanvas(url, analysis, param)`.
+2. ArcGIS calls `RasterAnalysisLayer.fetchTile(level, row, col, options)`
+   for each visible tile. The layer constructs the raster URL and calls
+   `getRenderedCanvas(url, analysis, param, options.signal)`. The signal
+   is the abort handle for that specific tile request — when ArcGIS
+   abandons a slot (mid-pan), it fires; we reject the fetchTile promise
+   immediately so ArcGIS can redraw without waiting on dead work. The
+   underlying worker render keeps running and the canvas still lands in
+   the LRU, ready for the next request.
 3. `getRenderedCanvas` first checks the **render-canvas LRU** keyed by
    `(url, analysis, param)`. Hit → return the cached `<canvas>` immediately.
-   Miss → `postMessage` to the worker.
+   Miss → check the **per-key in-flight map** (so ArcGIS double-requesting
+   the same slot only triggers one worker render). Miss → `postMessage`
+   to the worker, wrapped in a 20s timeout.
 4. Worker checks its **raster cache** (URL → Float32 grid). Hit → skip the
    network. Miss → fetch `/raster/...` (deduped by URL through `inflight`).
 5. Server (`app.py:serve_raster` → `LayerGeneration.fetch_tile_raster`)
@@ -111,28 +118,60 @@ img/
    returns it to ArcGIS. `LayerView.updating` flips false; the layer-swap
    logic promotes the pending layer to current and removes the previous.
 
-### Depth lookup pipeline (independent)
+### Depth lookup pipeline (shares the tile raster)
 
-User clicks → `static/map.js:lookupDepth` calls `/depth/<lat>/<lon>?source=…`
-→ `LayerGeneration.sample_depth` (LRU-cached) hits NOAA's `getSamples` for
-that source's endpoint and returns metres. No tile machinery involved.
+User clicks → `static/map.js:lookupDepth` computes the (z, x, y) tile +
+sub-tile fraction for the click using the COMMITTED (source, resolution)
+→ `postMessage({type:'sample', url, fracX, fracY})` to the worker → the
+worker reuses `fetchRaster` (cache hit on visible tiles, otherwise the
+same `/raster/...` fetch the renderer uses) and returns the float32
+elevation value at that pixel.
 
-### Adjacent-zoom prefetch
+This is deliberately NOT a separate NOAA endpoint. An earlier version
+called NOAA's `identify`/`getSamples` with a `pixelSize` hint derived from
+view zoom; NOAA's mosaic rule resolves to *different sub-rasters of the
+source mosaic* depending on `pixelSize`, so the same click at different
+zoom levels returned wildly different depths (often hundreds of feet
+off — coarse CRM at z=8 vs. high-res multibeam at z=14). Sampling the
+already-rendered grid removes the mosaic-rule ambiguity entirely: the
+value the user reads is exactly the value that produced the colored
+pixel they clicked on.
 
-When the view is stationary, `static/map.js:runPrefetch` walks the tile grid
-at `zoom-1` and `zoom+1` covering the current extent (sorted by distance to
-view centre, capped at `PREFETCH_BUDGET=16`) and calls `getRenderedCanvas`
-sequentially in the background. Anything not already in the canvas LRU is
-fetched + rendered, populating both the LRU and the server's disk cache,
-so the next zoom is an immediate cache hit instead of a 200-800 ms NOAA
-round-trip — the "stretched parent tile" blur window largely disappears.
+### Tiered prefetch
+
+When the view is stationary, `static/map.js:runPrefetch` warms the
+canvas LRU with tiles the user is likely to need next. Five tiers, each
+with its own budget (so a high-count tier can't crowd out a low-count
+one) and sorted by distance to view centre:
+
+1. **Same-zoom 1-tile ring** around the visible extent — covers the
+   most common move (a small pan into adjacent geography). Highest
+   priority because there's no built-in fallback for "tile just outside
+   what's loaded": ArcGIS shows basemap until the new tile arrives.
+2. **zoom + 1** — child tiles. Covers zoom-in.
+3. **zoom - 1, - 2, - 3** — parent tiles. ArcGIS's stretched-parent
+   fallback is what fills the gap while finer tiles load; if no
+   parent is cached, the slot goes to basemap. Three coarse levels
+   means *some* parent is always available no matter how fast the
+   user is zooming in.
 
 Sequential, not parallel: the render worker is single-threaded, and a
 parallel flood would queue *ahead* of any user-issued `fetchTile` and
-make zooms visibly slower. A `prefetchToken` is bumped on every cancel
-(`view.stationary` going false, or commit/live-param), causing the loop
-to bail on the next iteration without losing the already-rendered tiles
-that landed in the cache.
+make pan/zoom transitions visibly slower. A `prefetchToken` is bumped
+on every cancel (`view.stationary` going false, or commit/live-param),
+causing the loop to bail on the next iteration without losing the
+already-rendered tiles that landed in the cache.
+
+### Worker resilience
+
+The render worker is wrapped in a restartable factory in
+`static/map.js`. On `error` / `messageerror`, every entry in the
+`pending` map is resolved as `'error'` (so callers — fetchTile,
+sample — return the dark blank and let ArcGIS move on), then a fresh
+worker is spawned. Without this, a single worker crash left every
+in-flight tile request dangling forever, which ArcGIS reads as
+"still loading" — the slot never gets a canvas and the basemap
+shows through indefinitely.
 
 ### Apply pipeline (commit / draft / cutover)
 
@@ -222,10 +261,9 @@ crossing wires.
 | Where             | Key                           | Lifetime         | Eviction           |
 | ----------------- | ----------------------------- | ---------------- | ------------------ |
 | Browser HTTP      | URL                           | 1 day            | Browser policy     |
-| Render-canvas LRU | `(url, analysis, param)`      | Page lifetime    | LRU @ 384 entries  |
+| Render-canvas LRU | `(url, analysis, param)`      | Page lifetime    | LRU @ 768 entries  |
 | Worker raster LRU | URL                           | Page lifetime    | LRU @ 256 entries  |
 | Server disk cache | `(source, res, z, x, y)`      | Forever          | Manual / disk full |
-| `sample_depth`    | `(source, lat, lon)`          | Process lifetime | LRU @ 20 000       |
 
 The render-canvas cache is what makes slider drags feel instant: most drag
 positions repeat within a few seconds, so the second visit is one Map lookup.

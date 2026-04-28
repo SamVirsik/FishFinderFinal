@@ -249,6 +249,16 @@ input, select {
     pointer-events: none;
 }
 
+.panel.panel-left {
+    right: auto;
+    left: 16px;
+    width: 300px;
+}
+
+.panel.panel-left.collapsed {
+    transform: translateX(calc(-100% - 32px));
+}
+
 .panel::-webkit-scrollbar {
     width: 8px;
 }
@@ -597,30 +607,154 @@ input, select {
     background: var(--bg-elev-solid);
 }
 
-/* ─── Floating action ────────────────────────────────────── */
-.floating-btn {
-    position: fixed;
-    bottom: 20px;
-    left: 20px;
-    z-index: 900;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    background: var(--bg-elev);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 500;
-    transition: background 0.15s ease, border-color 0.15s ease;
+.panel-toggle-left {
+    right: auto;
+    left: 16px;
+    transform: translateX(-8px);
 }
 
-.floating-btn:hover {
-    background: var(--bg-elev-solid);
-    border-color: var(--border-strong);
+.panel-toggle-left.visible {
+    transform: translateX(0);
+}
+
+/* ─── Basemap grid ───────────────────────────────────────── */
+.basemap-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.basemap-btn {
+    padding: 8px 4px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 500;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.basemap-btn:hover {
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text);
+}
+
+.basemap-btn.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* ─── Coord inputs ───────────────────────────────────────── */
+.coord-inputs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.coord-field {
+    display: block;
+}
+
+.coord-field span {
+    display: block;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.coord-field input {
+    width: 100%;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s ease;
+    -moz-appearance: textfield;
+}
+
+.coord-field input::-webkit-outer-spin-button,
+.coord-field input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.coord-field input:focus {
+    border-color: var(--accent);
+}
+
+.coord-jump-btn {
+    margin-top: 4px;
+}
+
+/* ─── Measure tool ───────────────────────────────────────── */
+.measure-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.measure-actions > .ghost-btn {
+    width: 100%;
+    text-align: center;
+}
+
+.measure-secondary-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.measure-secondary-actions .ghost-btn {
+    flex: 1;
+    text-align: center;
+}
+
+.measure-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.measure-readout {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.measure-readout.hidden {
+    display: none;
+}
+
+.measure-primary {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+}
+
+.measure-secondary {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* While measuring, hint the cursor over the map */
+.workspace.measuring #map,
+.workspace.measuring .esri-view-surface {
+    cursor: crosshair !important;
 }
 
 /* ─── Depth info card ────────────────────────────────────── */
@@ -714,83 +848,6 @@ input, select {
     color: var(--accent);
 }
 
-/* ─── Jump-to dialog ─────────────────────────────────────── */
-.goto-dialog {
-    width: 320px;
-    padding: 22px;
-    background: var(--bg-elev-solid);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text);
-    box-shadow: var(--shadow);
-}
-
-.goto-dialog::backdrop {
-    background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(2px);
-}
-
-.goto-dialog h3 {
-    margin: 0 0 6px;
-    font-size: 15px;
-    font-weight: 600;
-}
-
-.dialog-hint {
-    margin: 0 0 16px;
-    font-size: 12.5px;
-    color: var(--text-dim);
-}
-
-.dialog-hint code {
-    color: var(--text);
-    background: rgba(255, 255, 255, 0.06);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 11.5px;
-}
-
-.dialog-field {
-    display: block;
-    margin-bottom: 12px;
-}
-
-.dialog-field span {
-    display: block;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-dim);
-    margin-bottom: 6px;
-}
-
-.dialog-field input {
-    width: 100%;
-    padding: 9px 12px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    outline: none;
-    transition: border-color 0.15s ease;
-}
-
-.dialog-field input:focus {
-    border-color: var(--accent);
-}
-
-.dialog-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 18px;
-}
-
-.dialog-actions .ghost-btn,
-.dialog-actions .apply-btn {
-    flex: 1;
-    margin-top: 0;
-}
-
 /* ─── ArcGIS overrides ───────────────────────────────────── */
 .esri-attribution {
     background: rgba(0, 0, 0, 0.6) !important;
@@ -800,6 +857,12 @@ input, select {
 
 .esri-attribution a {
     color: var(--text-dim) !important;
+}
+
+/* Push the zoom widget down so it sits BELOW the collapsed left-panel
+   toggle button (which is anchored at top-left of the workspace). */
+.esri-zoom {
+    margin-top: 56px;
 }
 
 .esri-zoom .esri-widget--button,
@@ -821,6 +884,12 @@ input, select {
 
 @media (max-width: 700px) {
     .panel {
+        right: 8px;
+        left: 8px;
+        width: auto;
+    }
+
+    .panel.panel-left {
         right: 8px;
         left: 8px;
         width: auto;

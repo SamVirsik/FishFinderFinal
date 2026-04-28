@@ -29,7 +29,6 @@ reusing connections shaves ~100-200 ms off every fetch after the first.
 import math
 import os
 import threading
-from functools import lru_cache
 from io import BytesIO
 
 import numpy as np
@@ -40,7 +39,6 @@ from PIL import Image
 
 
 HTTP_TIMEOUT_S = 30
-SAMPLE_TIMEOUT_S = 8
 OUTPUT_TILE_PX = 256
 BUFFER_PX = 16
 NOAA_CONCURRENCY = 6
@@ -199,7 +197,7 @@ def _fetch_raster_bytes(source: str, bbox_mercator, size_px: int):
     return resp.content
 
 
-def _decode_raster(raw_bytes, expected_size: int):
+def _decode_raster(raw_bytes, expected_size: int, source: str = None):
     """
     Decode TIFF bytes -> 2-D float32 ndarray with NaN for nodata.
     Returns None if the response wasn't a usable single-band float raster.
@@ -227,10 +225,20 @@ def _decode_raster(raw_bytes, expected_size: int):
             dtype=np.float32,
         )
 
-    # Coerce sentinel nodata to NaN. NOAA conventions vary by source:
-    # -9999, -32768, +/- 1e6, etc. Anything well outside the plausible range
-    # for Earth elevation in metres is treated as nodata.
-    arr = np.where(np.abs(arr) >= 11000.0, np.nan, arr)
+    # Coerce sentinel nodata to NaN. The |v|>=11000 fallback catches the
+    # large-magnitude sentinels (-32768, +/-1e6, ...), but several NOAA
+    # sources use -9999, which sits inside the plausible-elevation range
+    # and slips through. Mask the source-specific sentinel exactly to fix
+    # the "looks like very deep water at no-coverage pixels" artifact and
+    # to let the worker's all-nodata-tile detection actually trigger.
+    sentinel = None
+    if source is not None:
+        sentinel = _SOURCE_SPEC.get(source, {}).get('params', {}).get('noData')
+    if sentinel is not None:
+        arr = np.where((np.abs(arr) >= 11000.0) | (arr == np.float32(sentinel)),
+                       np.nan, arr)
+    else:
+        arr = np.where(np.abs(arr) >= 11000.0, np.nan, arr)
     return arr
 
 
@@ -242,7 +250,7 @@ def _load_or_fetch(source: str, z: int, x: int, y: int,
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'rb') as f:
-                arr = _decode_raster(f.read(), size_px)
+                arr = _decode_raster(f.read(), size_px, source)
                 if arr is not None:
                     return arr
         except OSError as e:
@@ -259,7 +267,7 @@ def _load_or_fetch(source: str, z: int, x: int, y: int,
     except OSError as e:
         print(f"[raster] cache write failed for {cache_path}: {e}")
 
-    return _decode_raster(raw, size_px)
+    return _decode_raster(raw, size_px, source)
 
 
 # ---------------------------------------------------------------------------
@@ -291,42 +299,3 @@ def fetch_tile_raster(data_source: str, resolution: int,
 
     cellsize_m = true_cellsize_m(fetch_bbox, fetch_size)
     return arr, cellsize_m, BUFFER_PX
-
-
-# ---------------------------------------------------------------------------
-# Point sampling for click-for-depth
-# ---------------------------------------------------------------------------
-
-@lru_cache(maxsize=20_000)
-def sample_depth(source: str, lat: float, lon: float):
-    """Depth in metres at (lat, lon) for the given source. None on failure."""
-    spec = _source(source)
-    sample_url = spec['url'].rsplit('/', 1)[0] + '/getSamples'
-
-    params = {
-        'geometry': f"{lon},{lat}",
-        'geometryType': 'esriGeometryPoint',
-        'returnFirstValueOnly': 'true',
-        'outFields': 'PixelValue',
-        'f': 'json',
-    }
-    for key in ('renderingRule', 'noData', 'noDataInterpretation'):
-        if key in spec['params']:
-            params[key] = spec['params'][key]
-
-    try:
-        r = _session.get(sample_url, params=params, timeout=SAMPLE_TIMEOUT_S)
-        r.raise_for_status()
-        samples = r.json().get('samples') or []
-        if not samples:
-            return None
-        v = samples[0].get('value')
-        if v is None or v == '':
-            return None
-        f = float(v)
-        if not math.isfinite(f) or abs(f) >= 11000.0:
-            return None
-        return f
-    except Exception as e:
-        print(f"[sample_depth] {source}: {e}")
-        return None

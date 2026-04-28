@@ -42,12 +42,13 @@ function rasterCacheSet(url, val) {
     }
 }
 
-// Returns the raster on success; returns null for HTTP 204 ("legitimately
-// no data here" — caches the null so we don't re-fetch); throws on any
-// transient failure (network error, non-204 non-OK status, decode error)
-// so the caller can report it as 'error' rather than 'empty'. Conflating
-// the two would let a transient error poison the canvas LRU as a
-// permanent blank tile.
+// Returns the raster on success; throws on any transient failure (network
+// error, non-OK HTTP status, decode error) so the caller can report it as
+// 'error' rather than 'empty'. The server now returns 5xx (not 204) on
+// transient failures so this branch is the one that actually fires for
+// NOAA blips — keeping the canvas LRU from caching a permanent blank.
+// (HTTP 204 is still handled defensively below; legitimate "no coverage
+// here" is now signalled by an all-NaN raster, detected post-decode.)
 function fetchRaster(url) {
     const cached = rasterCacheGet(url);
     if (cached !== undefined) return Promise.resolve(cached);
@@ -127,10 +128,42 @@ async function handleRender(id, url, analysisKey, param) {
 
     // Coerce NaN nodata → 0 (so gradients/Gaussians don't propagate),
     // record the mask so we can punch the alpha channel afterwards.
+    let nodataCount = 0;
     for (let i = 0; i < n; i++) {
         const v = data[i];
-        if (Number.isNaN(v)) { scratchElev[i] = 0; scratchMask[i] = 1; }
-        else                 { scratchElev[i] = v; scratchMask[i] = 0; }
+        if (Number.isNaN(v)) {
+            scratchElev[i] = 0;
+            scratchMask[i] = 1;
+            nodataCount++;
+        } else {
+            scratchElev[i] = v;
+            scratchMask[i] = 0;
+        }
+    }
+
+    // Entirely-nodata tile: NOAA returned a raster but every pixel was the
+    // nodata sentinel. That used to render as a fully-transparent canvas,
+    // letting the basemap show through the whole tile slot — read by users
+    // as "the depth tile randomly didn't load." Treat it the same as the
+    // legitimate-no-coverage signal so the main thread paints the opaque
+    // blank instead. Crop to the visible region (excluding the buffer
+    // margin) so a few stray nodata cells in the buffer don't matter.
+    const inner = w - 2 * bufferPx;
+    if (inner > 0 && inner < w) {
+        let innerNodata = 0;
+        for (let yy = bufferPx; yy < bufferPx + inner; yy++) {
+            const rowOff = yy * w + bufferPx;
+            for (let xx = 0; xx < inner; xx++) {
+                if (scratchMask[rowOff + xx]) innerNodata++;
+            }
+        }
+        if (innerNodata === inner * inner) {
+            self.postMessage({ type: 'empty', id });
+            return;
+        }
+    } else if (nodataCount === n) {
+        self.postMessage({ type: 'empty', id });
+        return;
     }
 
     const fn = self.FFAnalyses[analysisKey] || self.FFAnalyses['color-relief'];
@@ -158,13 +191,60 @@ async function handleRender(id, url, analysisKey, param) {
 }
 
 
+// ─── Point sampling ───────────────────────────────────────────────────
+//
+// Reads a single elevation value out of the tile's float32 grid, at a
+// position given as (fracX, fracY) ∈ [0, 1) within the *visible* tile
+// (i.e. excluding the buffer margin). Reuses the same fetch + cache as
+// the render path, so a click on a visible tile is a pure cache lookup
+// and a click on a not-yet-loaded tile reuses any inflight render fetch.
+//
+// This is the source of truth for the depth-card readout — it hits the
+// exact pixel grid the user is looking at, which removes the mosaic-
+// rule ambiguity that NOAA's identify/getSamples endpoints introduce
+// (those resolve to different sub-rasters of the source mosaic depending
+// on the pixelSize hint, which is why the old depth endpoint disagreed
+// with itself across zoom levels by hundreds of feet).
+async function handleSample(id, url, fracX, fracY) {
+    let raster;
+    try {
+        raster = await fetchRaster(url);
+    } catch {
+        self.postMessage({ type: 'sampled', id, value: null });
+        return;
+    }
+    if (raster === null) {
+        self.postMessage({ type: 'sampled', id, value: null });
+        return;
+    }
+    const { w, h, bufferPx, data } = raster;
+    const inner = w - 2 * bufferPx;
+    const fx = Math.min(Math.max(fracX, 0), 0.999999);
+    const fy = Math.min(Math.max(fracY, 0), 0.999999);
+    const ix = bufferPx + Math.floor(fx * inner);
+    const iy = bufferPx + Math.floor(fy * inner);
+    const v = data[iy * w + ix];
+    self.postMessage({
+        type: 'sampled', id,
+        value: Number.isFinite(v) ? v : null,
+    });
+}
+
+
 self.addEventListener('message', (ev) => {
     const msg = ev.data;
-    if (!msg || msg.type !== 'render') return;
-    handleRender(msg.id, msg.url, msg.analysisKey, msg.param)
-        .catch((err) => {
-            self.postMessage({
-                type: 'error', id: msg.id, message: String(err)
+    if (!msg) return;
+    if (msg.type === 'render') {
+        handleRender(msg.id, msg.url, msg.analysisKey, msg.param)
+            .catch((err) => {
+                self.postMessage({
+                    type: 'error', id: msg.id, message: String(err)
+                });
             });
-        });
+    } else if (msg.type === 'sample') {
+        handleSample(msg.id, msg.url, msg.fracX, msg.fracY)
+            .catch(() => {
+                self.postMessage({ type: 'sampled', id: msg.id, value: null });
+            });
+    }
 });
