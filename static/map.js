@@ -187,14 +187,21 @@ function onWorkerMessage(ev) {
     }
 }
 
-function onWorkerError(ev) {
-    console.error('[worker] crashed, restarting:', ev.message || ev);
+// Tear down + respawn. Drains every in-flight `pending` entry as
+// 'error' before terminating so callers see a clean transient failure
+// (and will retry on the next ArcGIS request) instead of a dangling
+// promise. Used by both the crash recovery path and the manual reload
+// button — same operation, different trigger.
+function resetWorker() {
     try { renderWorker.terminate(); } catch { /* already gone */ }
-    // Drain pending — callers (fetchTile, sample) treat 'error' / null
-    // as a transient failure and will retry on next ArcGIS request.
     for (const slot of pending.values()) slot.resolve({ status: 'error' });
     pending.clear();
     renderWorker = makeWorker();
+}
+
+function onWorkerError(ev) {
+    console.error('[worker] crashed, restarting:', ev.message || ev);
+    resetWorker();
 }
 
 function makeWorker() {
@@ -400,6 +407,7 @@ require([
     const $hint            = document.getElementById(`analysis-hint-${id}`);
     const $apply           = document.getElementById(`apply-btn-${id}`);
     const $reset           = document.getElementById(`reset-btn-${id}`);
+    const $reload          = document.getElementById(`reload-btn-${id}`);
     const $pendingAnalysis = document.getElementById(`pending-analysis-${id}`);
     const $pendingSource   = document.getElementById(`pending-source-${id}`);
     const $pendingRes      = document.getElementById(`pending-resolution-${id}`);
@@ -968,6 +976,88 @@ require([
 
     $apply.addEventListener("click", commitDraft);
     $reset.addEventListener("click", resetDraft);
+
+
+    // ─── Reload view (manual pipeline reset) ───────────────
+    //
+    // Always-on safety valve. Drains every layer of in-memory cache
+    // (canvas LRU, in-flight dedup, the worker's raster cache + scratch)
+    // and rebuilds the visible layer from scratch with the current
+    // settings + view position. The server's disk cache is preserved —
+    // those bytes are NOAA's truth and re-fetching them serves nothing.
+    //
+    // What this fixes:
+    //   * Stuck/blurry tiles where ArcGIS thinks a slot is loading but
+    //     it isn't (rare but real).
+    //   * A bad render in the canvas LRU that keeps coming back as a
+    //     cache hit.
+    //   * Worker in a degraded state (memory bloated, scratch out of
+    //     sync, etc.) without an outright crash.
+    //   * Any "feels off" condition the user can't pin down — one click
+    //     gives them a known-good baseline without losing context.
+    //
+    // What it deliberately does NOT touch:
+    //   * Settings (analysis / source / resolution / param / opacity).
+    //   * View position (centre + zoom).
+    //   * Markers, measurement state, depth card, search history.
+    //   * Server disk cache (NOAA bytes don't change between page loads).
+    //
+    // Triggers a normal cutover under the hood, so the loading
+    // indicator + brief basemap-only window are the same UX the user
+    // already sees from Apply.
+    let reloadInFlight = false;
+    function reloadView() {
+        if (reloadInFlight) return;
+        reloadInFlight = true;
+        $reload.disabled = true;
+
+        // 1. Drop main-thread render caches. Future fetchTile calls will
+        //    miss and queue fresh worker renders.
+        canvasCache.clear();
+        inflightCanvas.clear();
+
+        // 2. Recycle the worker. Wipes its raster cache + scratch +
+        //    in-flight fetch dedup, and resolves any dangling render
+        //    requests as 'error' so they don't outlive the reset.
+        resetWorker();
+
+        // 3. Abandon any speculative prefetch that was queued against
+        //    the now-dead worker / cleared cache.
+        cancelPrefetch();
+
+        // 4. Rebuild the visible layer with the current committed
+        //    config. Cutover (not overlap) because the old layer's
+        //    canvases just got invalidated — keeping it on screen
+        //    would mean repainting from caches we just blew away.
+        applyConfig(committed, "cutover");
+
+        // The Apply pipeline's `updating: false` watch will run when
+        // the new tiles are ready and the layer is promoted; re-enable
+        // the button as part of that. Until then it stays in spinner
+        // mode (CSS handles the icon spin).
+        const start = performance.now();
+        const enable = () => {
+            // Floor the visible-spinner time to ~500ms so a fast cache-
+            // hit reload (e.g. server disk cache warm) still reads as
+            // "something happened" instead of an instant flicker.
+            const elapsed = performance.now() - start;
+            const wait = Math.max(0, 500 - elapsed);
+            setTimeout(() => {
+                $reload.disabled = false;
+                reloadInFlight = false;
+            }, wait);
+        };
+        view.whenLayerView(pendingLayer || currentLayer)
+            .then((lv) => {
+                const h = lv.watch("updating", (val) => {
+                    if (val) return;
+                    h.remove();
+                    enable();
+                });
+            })
+            .catch(enable);  // layer torn down before we got the view → just re-enable
+    }
+    $reload.addEventListener("click", reloadView);
 
     // Enter inside the panel applies any pending changes — convenient
     // after a keyboard-only dropdown change.
