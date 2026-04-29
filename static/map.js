@@ -174,7 +174,20 @@ let nextRequestId = 0;
 function onWorkerMessage(ev) {
     const { type, id } = ev.data;
     const slot = pending.get(id);
-    if (!slot) return;
+    if (!slot) {
+        // Late arrival: the request was already abandoned (timed out, worker
+        // reset, or message races past terminate). The bitmap holds GPU
+        // memory that would otherwise sit until a JS GC fires AND the
+        // browser's GPU process gets the finalizer message — under sustained
+        // toggling that pile-up of orphan bitmaps is what eventually starves
+        // createImageBitmap, which then starts returning 'error', which
+        // ArcGIS draws as the dark blank canvas. Closing here breaks the
+        // feedback loop.
+        if (type === 'rendered' && ev.data.bitmap && ev.data.bitmap.close) {
+            try { ev.data.bitmap.close(); } catch { /* nothing to do */ }
+        }
+        return;
+    }
     pending.delete(id);
     if (type === 'rendered') {
         slot.resolve({ status: 'ok', bitmap: ev.data.bitmap, size: ev.data.size });
@@ -213,14 +226,19 @@ function makeWorker() {
 }
 renderWorker = makeWorker();
 
+// Returns { promise, id } — the id lets the caller drop the pending slot
+// if it gives up before the worker responds (timeout), so the late
+// response lands in onWorkerMessage's late-arrival branch and its bitmap
+// gets explicitly closed instead of pinning GPU memory until GC.
 function requestRender(url, analysisKey, param) {
     const id = ++nextRequestId;
-    return new Promise((resolve) => {
+    const promise = new Promise((resolve) => {
         pending.set(id, { resolve });
         renderWorker.postMessage({
             type: 'render', id, url, analysisKey, param,
         });
     });
+    return { promise, id };
 }
 
 function requestSample(url, fracX, fracY) {
@@ -304,9 +322,11 @@ function renderToCanvas(url, analysisKey, param, key) {
     const work = (async () => {
         let result;
         let timer;
+        const { promise: renderPromise, id: renderId } =
+            requestRender(url, analysisKey, param);
         try {
             result = await Promise.race([
-                requestRender(url, analysisKey, param),
+                renderPromise,
                 new Promise((_, rej) => {
                     timer = setTimeout(
                         () => rej(new Error('Render timeout')),
@@ -315,8 +335,14 @@ function renderToCanvas(url, analysisKey, param, key) {
                 }),
             ]);
         } catch (err) {
-            // Timeout (or any other unexpected throw): treat as transient.
-            // Don't cache; next ArcGIS call retries cleanly.
+            // Timeout / unexpected throw: treat as transient. Don't cache —
+            // the next ArcGIS call retries. Drop the pending slot so when
+            // the worker eventually responds, onWorkerMessage takes the
+            // late-arrival branch and explicitly closes the bitmap rather
+            // than resolving a promise nobody is listening to (which would
+            // pin GPU memory until JS GC fires).
+            pending.delete(renderId);
+            console.warn('[render] giving up on tile:', err && err.message || err);
             return blankTileCanvas;
         } finally {
             if (timer) clearTimeout(timer);
@@ -646,7 +672,19 @@ require([
                 schedulePrefetch();
             });
             pendingHandle = handle;
-        }).catch(() => { /* layer was removed before view resolved */ });
+        }).catch(() => {
+            // The most common cause is supersession: a newer apply tore
+            // this layer down before its layerView was created and the
+            // newer apply has already overwritten pendingLayer / etc., so
+            // we MUST NOT touch those globals here — clearing pendingLayer
+            // would mean the next apply's `tearDown(pendingLayer, ...)`
+            // becomes a no-op and the orphan stays on the map forever
+            // (a stack of ghost tile layers each calling fetchTile, which
+            // is what makes Reload "kill" the view after a couple of
+            // presses). Just clear the loading indicator if we are still
+            // the latest in-flight apply; the next apply will re-show it.
+            if (myId === pendingApplyId) hideLoading();
+        });
     }
 
     function commitDraft() {
@@ -980,74 +1018,57 @@ require([
 
     // ─── Reload view (manual pipeline reset) ───────────────
     //
-    // Always-on safety valve. Drains every layer of in-memory cache
-    // (canvas LRU, in-flight dedup, the worker's raster cache + scratch)
-    // and rebuilds the visible layer from scratch with the current
-    // settings + view position. The server's disk cache is preserved —
-    // those bytes are NOAA's truth and re-fetching them serves nothing.
+    // Forces a fresh tile layer with the current committed config. Goes
+    // through the SAME cutover path as Apply: ArcGIS's per-tile abort
+    // signals fire on the old layer as it is removed, the new layer
+    // re-issues fetchTile for every visible slot, and any newly-visible
+    // tile re-renders. Tiles already in the canvas LRU paint instantly
+    // — the LRU is the user's friend, not what they're trying to escape.
     //
-    // What this fixes:
-    //   * Stuck/blurry tiles where ArcGIS thinks a slot is loading but
-    //     it isn't (rare but real).
-    //   * A bad render in the canvas LRU that keeps coming back as a
-    //     cache hit.
-    //   * Worker in a degraded state (memory bloated, scratch out of
-    //     sync, etc.) without an outright crash.
-    //   * Any "feels off" condition the user can't pin down — one click
-    //     gives them a known-good baseline without losing context.
+    // What this previously did and no longer does:
+    //   * Wipe canvasCache. Pointless (the cache is keyed by analysis +
+    //     param, so a "bad" entry would only repeat under the exact same
+    //     key — and after the worker scratch + GPU-bitmap leak fixes
+    //     that scenario is no longer reachable).
+    //   * Wipe inflightCanvas. Unsafe — the in-flight `work` IIFEs are
+    //     still going to land their results and try to clean up their
+    //     map slot.
+    //   * Terminate + respawn the render worker. Concurrent with the
+    //     cutover this opened a window where ArcGIS aborts on the old
+    //     layer raced with `pending` resolutions from the dying worker
+    //     and the freshly-added new layer's first fetchTile burst —
+    //     in practice this is what was breaking the view on every press.
     //
-    // What it deliberately does NOT touch:
-    //   * Settings (analysis / source / resolution / param / opacity).
-    //   * View position (centre + zoom).
-    //   * Markers, measurement state, depth card, search history.
-    //   * Server disk cache (NOAA bytes don't change between page loads).
+    // What it still does NOT touch (unchanged):
+    //   * Settings, view position, markers, measurement state, search
+    //     history, or the server-side disk cache.
     //
-    // Triggers a normal cutover under the hood, so the loading
-    // indicator + brief basemap-only window are the same UX the user
-    // already sees from Apply.
+    // If the user genuinely needs a full memory wipe (worker has
+    // somehow gone wild, GPU starvation, etc.), a hard page refresh
+    // is the right escape hatch — and the heartbeat will let the
+    // backend recycle as well.
     let reloadInFlight = false;
     function reloadView() {
         if (reloadInFlight) return;
         reloadInFlight = true;
         $reload.disabled = true;
 
-        // 1. Drop main-thread render caches. Future fetchTile calls will
-        //    miss and queue fresh worker renders.
-        canvasCache.clear();
-        inflightCanvas.clear();
-
-        // 2. Recycle the worker. Wipes its raster cache + scratch +
-        //    in-flight fetch dedup, and resolves any dangling render
-        //    requests as 'error' so they don't outlive the reset.
-        resetWorker();
-
-        // 3. Abandon any speculative prefetch that was queued against
-        //    the now-dead worker / cleared cache.
         cancelPrefetch();
-
-        // 4. Rebuild the visible layer with the current committed
-        //    config. Cutover (not overlap) because the old layer's
-        //    canvases just got invalidated — keeping it on screen
-        //    would mean repainting from caches we just blew away.
         applyConfig(committed, "cutover");
 
-        // The Apply pipeline's `updating: false` watch will run when
-        // the new tiles are ready and the layer is promoted; re-enable
-        // the button as part of that. Until then it stays in spinner
-        // mode (CSS handles the icon spin).
         const start = performance.now();
         const enable = () => {
-            // Floor the visible-spinner time to ~500ms so a fast cache-
-            // hit reload (e.g. server disk cache warm) still reads as
-            // "something happened" instead of an instant flicker.
-            const elapsed = performance.now() - start;
-            const wait = Math.max(0, 500 - elapsed);
+            // Floor the spinner duration to ~500 ms so a fully-cached
+            // reload reads as "something happened" instead of a flicker.
+            const wait = Math.max(0, 500 - (performance.now() - start));
             setTimeout(() => {
                 $reload.disabled = false;
                 reloadInFlight = false;
             }, wait);
         };
-        view.whenLayerView(pendingLayer || currentLayer)
+        const layerToWatch = pendingLayer || currentLayer;
+        if (!layerToWatch) { enable(); return; }
+        view.whenLayerView(layerToWatch)
             .then((lv) => {
                 const h = lv.watch("updating", (val) => {
                     if (val) return;
@@ -1055,7 +1076,7 @@ require([
                     enable();
                 });
             })
-            .catch(enable);  // layer torn down before we got the view → just re-enable
+            .catch(enable);
     }
     $reload.addEventListener("click", reloadView);
 

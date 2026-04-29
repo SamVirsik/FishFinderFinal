@@ -17,6 +17,43 @@
 (function () {
     const M_TO_FT = 3.28084;
 
+
+    // ─── Reusable scratch buffers ───────────────────────────────────────
+    //
+    // Every analysis call previously allocated several Float32Arrays from
+    // scratch (gradient: 2; gaussianBlur: 2; hillshade: z + out; depthBand
+    // index: 1; etc.). At 288×288 px per tile that is ~330 KB per buffer —
+    // for color-relief alone roughly 1.3 MB allocated and dropped per
+    // tile. Multiplied across visible tiles, prefetch tiers, and
+    // visualization/zoom toggles that adds up to tens of MB churned per
+    // second of interactive use. The resulting GC sawtooth is what made
+    // the worker stall between renders during sustained sessions and tile
+    // slots stay blank longer than they should.
+    //
+    // Safety: the worker dispatches one analysis call at a time (the only
+    // async boundaries are network fetch and createImageBitmap, both of
+    // which sit OUTSIDE the analysis function). JavaScript does not
+    // preempt synchronous code, so a single shared scratch pool is safe
+    // even with concurrent handleRender invocations interleaving at the
+    // await points.
+    const _scratch = Object.create(null);
+    function _f32(name, n) {
+        let buf = _scratch[name];
+        if (!buf || buf.length < n) {
+            buf = new Float32Array(n);
+            _scratch[name] = buf;
+        }
+        return buf;
+    }
+    function _i32(name, n) {
+        let buf = _scratch[name];
+        if (!buf || buf.length < n) {
+            buf = new Int32Array(n);
+            _scratch[name] = buf;
+        }
+        return buf;
+    }
+
     // ─── Palettes (1:1 with src/analyses.py) ────────────────────────────
 
     // Land = transparent. Water = increasing depth.
@@ -95,8 +132,9 @@
     // (true gradient, since cellsize_m carries the Mercator-corrected
     // ground sample distance).
     function gradient(elev, w, h, cellsize) {
-        const dzdx = new Float32Array(w * h);
-        const dzdy = new Float32Array(w * h);
+        const n = w * h;
+        const dzdx = _f32('gx', n);
+        const dzdy = _f32('gy', n);
         const inv2c = 1 / (2 * cellsize);
         const invc = 1 / cellsize;
 
@@ -126,8 +164,9 @@
     // Hillshade: 0..1 illumination layer. Negates elev so that for ocean
     // tiles deep water reads as "high terrain" — matching analyses.py.
     function hillshade(elev, w, h, cellsize, exaggeration) {
-        const z = new Float32Array(w * h);
-        for (let i = 0; i < z.length; i++) z[i] = -elev[i] * exaggeration;
+        const n = w * h;
+        const z = _f32('hsZ', n);
+        for (let i = 0; i < n; i++) z[i] = -elev[i] * exaggeration;
         const { dzdx, dzdy } = gradient(z, w, h, cellsize);
 
         const az = (315.0 * Math.PI) / 180.0;
@@ -135,8 +174,8 @@
         const cosZen = Math.cos(zenith);
         const sinZen = Math.sin(zenith);
 
-        const out = new Float32Array(w * h);
-        for (let i = 0; i < out.length; i++) {
+        const out = _f32('hsOut', n);
+        for (let i = 0; i < n; i++) {
             const sx = dzdx[i];
             const sy = dzdy[i];
             const slope = Math.atan(Math.hypot(sx, sy));
@@ -152,10 +191,11 @@
 
     // Slope angle in degrees from horizontal.
     function slopeDegrees(elev, w, h, cellsize) {
+        const n = w * h;
         const { dzdx, dzdy } = gradient(elev, w, h, cellsize);
-        const out = new Float32Array(w * h);
+        const out = _f32('slpOut', n);
         const radToDeg = 180.0 / Math.PI;
-        for (let i = 0; i < out.length; i++) {
+        for (let i = 0; i < n; i++) {
             out[i] = Math.atan(Math.hypot(dzdx[i], dzdy[i])) * radToDeg;
         }
         return out;
@@ -195,15 +235,21 @@
     // approximation). O(N) per pixel total, independent of sigma. The
     // visual difference vs a true Gaussian on a depth grid is well below
     // colour-band quantisation, so we use it everywhere.
+    //
+    // The blur output ('bb') is intentionally a different scratch slot
+    // from any intermediate the caller might still hold (e.g. gradient
+    // outputs), so the returned buffer can be safely read by the caller
+    // even if the next analysis call recycles the 'ba' temp.
     function gaussianBlur(src, w, h, sigma) {
+        const n = w * h;
         if (sigma <= 0.5) {
-            const c = new Float32Array(src.length);
-            c.set(src);
+            const c = _f32('bb', n);
+            for (let i = 0; i < n; i++) c[i] = src[i];
             return c;
         }
         const radius = Math.max(1, Math.round(sigma));
-        const a = new Float32Array(w * h);
-        const b = new Float32Array(w * h);
+        const a = _f32('ba', n);
+        const b = _f32('bb', n);
         // 3 passes, each separable into horizontal + vertical.
         boxBlurPass(src, a, w, h, radius, 0); boxBlurPass(a, b, w, h, radius, 1);
         boxBlurPass(b, a, w, h, radius, 0); boxBlurPass(a, b, w, h, radius, 1);
@@ -269,7 +315,7 @@
     // Compute the depth-band index grid (used by both depthBands and
     // fishingSpots). Slot 0 reserved for land/transparent.
     function depthBandIndex(elev, w, h, band_ft) {
-        const idx = new Int32Array(w * h);
+        const idx = _i32('idx', w * h);
         const inv_band = 1.0 / Math.max(band_ft, 1e-3);
         for (let i = 0; i < elev.length; i++) {
             const e = elev[i];
@@ -403,13 +449,13 @@
         const idx = depthBandIndex(elev, w, h, band_ft);
         const slope_deg = slopeDegrees(elev, w, h, cellsize);
 
-        // depth-band-aware spot mask
-        const spot = new Float32Array(elev.length);
+        // depth-band-aware spot mask. Reused scratch — must explicitly write
+        // every cell (including land) since the buffer is no longer fresh.
+        const spot = _f32('spot', elev.length);
         for (let i = 0; i < elev.length; i++) {
             const e = elev[i];
-            if (e >= 0) continue;
+            if (e >= 0) { spot[i] = 0.0; continue; }
             const dft = -e * M_TO_FT;
-            // Pick the threshold for this depth band
             let thresh;
             if (dft < SPOT_DEPTH_BREAKS_FT[1]) thresh = SPOT_SLOPE_THRESH_DEG[0];
             else if (dft < SPOT_DEPTH_BREAKS_FT[2]) thresh = SPOT_SLOPE_THRESH_DEG[1];
