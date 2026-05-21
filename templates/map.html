@@ -102,14 +102,15 @@
                 <label class="field-label" for="data-source-dropdown-{{layer['id']}}">Bathymetry Source</label>
                 <span class="pending-tag" id="pending-source-{{layer['id']}}">Pending</span>
             </div>
-            <select id="data-source-dropdown-{{layer['id']}}" class="select">
-                <option value="dem-tiles" selected>Default DEM Mosaic — broad coverage</option>
-                <option value="dem-all">Stitched Coastal — best near shore</option>
-                <option value="fknms-multibeam">Florida Keys 2–5 m — highest detail</option>
-                <option value="bag-bathymetry">BAG — high-res, sparse coverage</option>
-                <option value="multibeam">Deep-Water Multibeam — offshore</option>
-                <option value="crm-mosaic">Coastal Relief — coarse, complete</option>
-                <option value="dem-global">Global Bathymetry — worldwide</option>
+            <!-- Options are populated on load from GET /sources. The select
+                 is disabled until the registry response lands (~10 ms over
+                 loopback) so it can't be interacted with mid-fetch.
+                 The placeholder carries a real value ("dem-tiles") so the
+                 map can still build its initial tile layer if the registry
+                 fetch is slow or fails — better a working default than a
+                 black map. -->
+            <select id="data-source-dropdown-{{layer['id']}}" class="select" disabled>
+                <option value="dem-tiles" disabled selected>Loading sources…</option>
             </select>
         </div>
 

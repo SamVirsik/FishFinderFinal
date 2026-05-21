@@ -29,20 +29,33 @@ import time
 
 import flask.cli
 import numpy as np
-from flask import Flask, Response, render_template
+from flask import Flask, Response, jsonify, render_template
 
-from src.LayerGeneration import fetch_tile_raster
+from src.LayerGeneration import UNKNOWN_SOURCE, fetch_tile_raster
+from src.data_sources import (
+    DEFAULT_SOURCE_ID,
+    all_visible_sources,
+    to_client_dict,
+)
 
 
 RASTER_DIR = 'img/raster'
 
-# Auto-shutdown when the browser disconnects. The page POSTs to /heartbeat
-# every second while it's open; if we go HEARTBEAT_TIMEOUT_S without a ping
-# AFTER having received at least one, we exit. So `python app.py` is
-# self-clean: close the tab and the server is gone within ~3s.
-HEARTBEAT_TIMEOUT_S = 3.0
+# Auto-shutdown is opt-in. Default behavior is a normal long-running Flask
+# server — `curl`, integration tests, and process supervisors all work
+# unmodified, and a probe doesn't trigger a 3-second exit countdown.
+#
+# Set FISHFINDER_AUTOSHUTDOWN=1 to arm the watchdog. When armed, the page's
+# 1 Hz POSTs to /heartbeat are counted; we only start watching for silence
+# AFTER receiving at least HEARTBEAT_MIN_PINGS (so a single curl probe can't
+# trip it), and we exit if HEARTBEAT_TIMEOUT_S elapses without a ping. The
+# 10 s timeout gives a real browser plenty of headroom on tab restore.
+_AUTOSHUTDOWN = os.environ.get('FISHFINDER_AUTOSHUTDOWN') == '1'
+HEARTBEAT_TIMEOUT_S = 10.0
+HEARTBEAT_MIN_PINGS = 2
 HEARTBEAT_CHECK_INTERVAL_S = 0.5
 _last_heartbeat = None
+_heartbeat_count = 0
 _heartbeat_lock = threading.Lock()
 
 # Quiet the dev server. Werkzeug logs every request at INFO and prints its
@@ -75,6 +88,11 @@ app = Flask(__name__)
 def serve_raster(source, resolution, z, x, y):
     result = fetch_tile_raster(source, resolution, z, x, y,
                                raster_root=RASTER_DIR)
+    if result is UNKNOWN_SOURCE:
+        # Hard reject for typo'd / unregistered source IDs. The previous
+        # behavior was to silently fall back to dem-tiles and cache the
+        # bytes under the bogus name — fixed by the registry rewrite.
+        return jsonify({"error": f"unknown source: {source}"}), 400
     if result is None:
         # 503 (not 204) is deliberate: the worker treats 204 as "NOAA
         # legitimately confirmed no coverage here" and caches a permanent
@@ -108,26 +126,57 @@ def index():
     return map_page()
 
 
+@app.route('/sources')
+def list_sources():
+    """Bathymetry-source registry, browser-facing subset.
+
+    The dropdown in `templates/map.html` is empty in source; the client
+    populates it from this endpoint on load. Same data also feeds the
+    per-source max-zoom clamp used by the prefetch loop.
+
+    No-cache while the registry is in flux — we want a hard reload to
+    pick up any registry edit without the browser serving a stale list.
+    """
+    body = {
+        "default": DEFAULT_SOURCE_ID,
+        "sources": [to_client_dict(s) for s in all_visible_sources()],
+    }
+    resp = jsonify(body)
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
-    """Browser keepalive ping. Resets the shutdown clock."""
-    global _last_heartbeat
-    with _heartbeat_lock:
-        _last_heartbeat = time.monotonic()
+    """Browser keepalive ping.
+
+    Always 204 so the client contract is identical in both modes. We only
+    touch the shared state when the watchdog is armed — no point paying
+    lock contention on every ping in default mode.
+    """
+    if _AUTOSHUTDOWN:
+        global _last_heartbeat, _heartbeat_count
+        with _heartbeat_lock:
+            _last_heartbeat = time.monotonic()
+            _heartbeat_count += 1
     return ('', 204)
 
 
 def _heartbeat_watcher():
     """Background daemon: shut the process down once heartbeats stop.
 
-    Stays silent until the FIRST heartbeat arrives, so a server started
-    without a browser doesn't immediately self-terminate.
+    Two guards before we ever exit:
+      - At least HEARTBEAT_MIN_PINGS pings must have arrived. A single
+        curl probe is not enough to arm the kill switch.
+      - At least HEARTBEAT_TIMEOUT_S must have elapsed since the most
+        recent ping.
     """
     while True:
         time.sleep(HEARTBEAT_CHECK_INTERVAL_S)
         with _heartbeat_lock:
             last = _last_heartbeat
-        if last is None:
+            count = _heartbeat_count
+        if count < HEARTBEAT_MIN_PINGS or last is None:
             continue
         if time.monotonic() - last > HEARTBEAT_TIMEOUT_S:
             os._exit(0)
@@ -139,6 +188,9 @@ if __name__ == '__main__':
     # LayerGeneration.py). debug=False so we don't pay the per-request
     # reloader overhead — turn it back on by hand if you're hacking on
     # template/python and want auto-reload.
-    threading.Thread(target=_heartbeat_watcher, daemon=True).start()
+    if _AUTOSHUTDOWN:
+        threading.Thread(target=_heartbeat_watcher, daemon=True).start()
+        print(f'auto-shutdown armed: {HEARTBEAT_TIMEOUT_S:.0f}s idle '
+              f'after {HEARTBEAT_MIN_PINGS} pings', flush=True)
     print('FishFinder running at http://127.0.0.1:8080', flush=True)
     app.run(host='127.0.0.1', port=8080, debug=False, threaded=True)

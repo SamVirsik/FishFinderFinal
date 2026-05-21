@@ -76,6 +76,28 @@
 const baseurl = window.location.origin;
 
 
+// ─── Bathymetry-source registry (one source of truth) ──────────
+// Started at module load so it runs in parallel with the ArcGIS
+// `require([...])` dependency load — by the time the require callback
+// is ready to populate the dropdown the JSON has usually already
+// landed. The dropdown is rendered empty in `templates/map.html` and
+// filled from this response; we also stash per-source min/max zoom so
+// the prefetch loop can clamp tiers to what each source actually
+// supports (a hardcoded `zoom + 1 <= 23` used to issue guaranteed-503
+// prefetch requests at zoom 22).
+const _sourcesReady = fetch(`${baseurl}/sources`, { cache: 'no-store' })
+    .then(r => r.ok ? r.json()
+                    : Promise.reject(new Error(`/sources HTTP ${r.status}`)))
+    .catch(err => {
+        console.error('[FishFinder] failed to load /sources:', err);
+        // Hard-fail open: empty list means the dropdown stays in
+        // "Loading sources…" state forever, which is the right UX
+        // signal that the backend registry is broken — better than
+        // silently inventing a fallback that masks the failure.
+        return { default: null, sources: [] };
+    });
+
+
 // ─── Browser-presence heartbeat ─────────────────────────────────
 // The Python server self-terminates ~3s after the last ping, so closing
 // the tab kills the backing process automatically. Uses sendBeacon
@@ -415,6 +437,13 @@ require([
     "esri/geometry/Polyline",
 ], (EsriMap, MapView, BaseTileLayer, GraphicsLayer, TileInfo, SpatialReference,
     Graphic, Point, Polyline) => {
+    // NOTE: this callback is intentionally NOT `async`. ArcGIS 4.26 ships
+    // Dojo's AMD loader, which silently fails to invoke an async-function
+    // callback — no error, no console message, the whole boot just stops.
+    // That symptom was the entire "black map + dropdown stuck on Loading
+    // sources…" regression. Anything that needs to wait on a Promise (the
+    // `/sources` fetch below) is handled with `.then()` so the require
+    // callback stays a plain function.
 
     const layerSlot = map_layers[0];
     const id = layerSlot.id;
@@ -460,6 +489,63 @@ require([
     const $measureSecondary= document.getElementById("measure-secondary");
     const $measureTag      = document.getElementById("measure-status-tag");
     const $workspace       = document.querySelector(".workspace");
+
+
+    // ─── Populate bathymetry-source dropdown from /sources ─────
+    // Boot is decoupled from the registry fetch: the HTML placeholder
+    // option carries value="dem-tiles" so the map's initial tile layer
+    // builds with a valid source ID even if /sources is slow or fails.
+    // When the fetch lands, we swap the dropdown contents for the real
+    // registry list and (re)select the default. `sourcesById` is read
+    // by the prefetch loop to clamp tiers to each source's true max
+    // zoom; it stays `{}` until the response arrives, at which point
+    // the next prefetch tick picks up the per-source caps.
+    let sourcesById = {};
+    _sourcesReady.then((payload) => {
+        const sourcesList = payload.sources || [];
+        sourcesById = Object.fromEntries(sourcesList.map(s => [s.id, s]));
+        const defaultSourceId = payload.default;
+
+        if (!sourcesList.length) {
+            // Registry fetch failed or returned empty. Surface the
+            // failure in the dropdown — the indefinite "Loading sources…"
+            // text would otherwise read as "still loading" forever.
+            // The map keeps running on the HTML placeholder's dem-tiles
+            // value so the user at least sees tiles.
+            $source.innerHTML =
+                '<option value="dem-tiles" disabled selected>'
+              + 'Sources unavailable — using default</option>';
+            $source.disabled = true;
+            return;
+        }
+
+        const prev = $source.value;  // bootstrap-time selection
+        $source.innerHTML = "";
+        for (const s of sourcesList) {
+            const opt = document.createElement("option");
+            opt.value = s.id;
+            opt.textContent = s.experimental
+                ? `${s.display_name} (experimental)`
+                : s.display_name;
+            if (s.notes) opt.title = s.notes;
+            $source.appendChild(opt);
+        }
+        // Honor the boot-time selection if it survives in the registry,
+        // otherwise fall back to the registry's declared default.
+        $source.value = sourcesById[prev] ? prev : defaultSourceId;
+        $source.disabled = false;
+
+        // The dropdown's value may have shifted (boot-fallback dem-tiles
+        // → registry default) if dem-tiles isn't in the registry. Sync
+        // draft and committed so the Apply button doesn't false-positive
+        // as dirty, and rebuild the live layer if the source genuinely
+        // changed so the visible tiles match the new source ID.
+        draft = readDraft();
+        const sourceChanged = draft.source !== committed.source;
+        committed = { ...committed, source: draft.source };
+        if (sourceChanged) applyConfig(committed, "cutover");
+        syncControlState();
+    });
 
 
     // ─── Slider/label sync ─────────────────────────────────
@@ -870,16 +956,23 @@ require([
     let prefetchInFlight  = false;
     let prefetchTimer     = null;
 
-    function buildPrefetchPlan(extent, zoom) {
+    function buildPrefetchPlan(extent, zoom, sourceId) {
         const cx = (extent.xmin + extent.xmax) / 2;
         const cy = (extent.ymin + extent.ymax) / 2;
+        // Per-source zoom caps, fed from the registry. Falls back to
+        // [0, 22] (the server's hard floor/ceiling) if the source is
+        // missing — keeps the loop running even if the registry race
+        // somehow leaves us without entries.
+        const srcMeta = sourcesById[sourceId];
+        const zMin = srcMeta ? srcMeta.min_zoom : 0;
+        const zMax = srcMeta ? srcMeta.max_zoom : 22;
         const plan = [];
         const tiers = {
-            "ring": zoom <= 22 ? tilesAroundView(extent, zoom, 1) : [],
-            "z+1":  zoom + 1 <= 23 ? tilesInView(extent, zoom + 1) : [],
-            "z-1":  zoom - 1 >= 0 ? tilesInView(extent, zoom - 1)  : [],
-            "z-2":  zoom - 2 >= 0 ? tilesInView(extent, zoom - 2)  : [],
-            "z-3":  zoom - 3 >= 0 ? tilesInView(extent, zoom - 3)  : [],
+            "ring": zoom <= zMax       ? tilesAroundView(extent, zoom, 1)   : [],
+            "z+1":  zoom + 1 <= zMax   ? tilesInView(extent, zoom + 1)      : [],
+            "z-1":  zoom - 1 >= zMin   ? tilesInView(extent, zoom - 1)      : [],
+            "z-2":  zoom - 2 >= zMin   ? tilesInView(extent, zoom - 2)      : [],
+            "z-3":  zoom - 3 >= zMin   ? tilesInView(extent, zoom - 3)      : [],
         };
         for (const tier of PREFETCH_TIERS) {
             const tiles = tiers[tier.name];
@@ -898,7 +991,7 @@ require([
         const myToken = ++prefetchToken;
         const cfg = { ...committed };
         const zoom = Math.round(view.zoom);
-        const plan = buildPrefetchPlan(view.extent, zoom);
+        const plan = buildPrefetchPlan(view.extent, zoom, cfg.source);
 
         prefetchInFlight = true;
         try {

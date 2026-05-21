@@ -37,6 +37,15 @@ from requests.adapters import HTTPAdapter
 import tifffile
 from PIL import Image
 
+from src.data_sources import DataSource, get_source
+
+
+# Sentinel returned by fetch_tile_raster when the caller asks for an
+# unregistered source ID. The Flask layer maps it to HTTP 400 so the
+# client (or a typo'd curl) gets a clear error instead of a silent
+# fallback that mislabels the disk cache.
+UNKNOWN_SOURCE = object()
+
 
 HTTP_TIMEOUT_S = 30
 OUTPUT_TILE_PX = 256
@@ -107,97 +116,59 @@ def true_cellsize_m(bbox_mercator, fetch_size_px: int) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Sources
-# ---------------------------------------------------------------------------
-
-# Endpoint + per-source query overrides. All sources are requested at F32 in
-# EPSG:3857, so the only differences are the URL and the noData/rendering hints.
-_SOURCE_SPEC = {
-    'dem-tiles': dict(
-        url=('https://gis.ngdc.noaa.gov/arcgis/rest/services/'
-             'DEM_mosaics/DEM_tiles_mosaic/ImageServer/exportImage'),
-        params={'pixelType': 'F32', 'noData': -9999,
-                'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-    'bag-bathymetry': dict(
-        url='https://gis.ngdc.noaa.gov/arcgis/rest/services/bag_bathymetry/ImageServer/exportImage',
-        params={'pixelType': 'F32',
-                'renderingRule': '{"rasterFunction":"None"}',
-                'noData': 1000000, 'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-    'multibeam': dict(
-        url='https://gis.ngdc.noaa.gov/arcgis/rest/services/multibeam_mosaic/ImageServer/exportImage',
-        params={'pixelType': 'F32', 'noData': -32768,
-                'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-    'crm-mosaic': dict(
-        url='https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/CRM_mosaic/ImageServer/exportImage',
-        params={'pixelType': 'F32', 'noData': -9999,
-                'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-    'dem-all': dict(
-        url='https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_all/ImageServer/exportImage',
-        params={'pixelType': 'F32', 'noData': -9999,
-                'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-    'dem-global': dict(
-        url='https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_global_mosaic/ImageServer/exportImage',
-        params={'pixelType': 'F32', 'noData': -9999,
-                'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-    'fknms-multibeam': dict(
-        url=('https://gis.ngdc.noaa.gov/arcgis/rest/services/'
-             'nccos/FKNMS_multibeam_dem/ImageServer/exportImage'),
-        params={'pixelType': 'F32', 'noData': -32768,
-                'noDataInterpretation': 'esriNoDataMatchAny'},
-    ),
-}
-
-DEFAULT_SOURCE = 'dem-tiles'
-
-
-def _source(name: str):
-    return _SOURCE_SPEC.get(name) or _SOURCE_SPEC[DEFAULT_SOURCE]
-
-
-# ---------------------------------------------------------------------------
 # Fetch
+#
+# Source-level configuration (URL, nodata sentinel, rendering rule, etc.)
+# lives in `src/data_sources.py`. This module is responsible for the per-
+# tile mechanics: bbox math, HTTP, disk cache, decode.
 # ---------------------------------------------------------------------------
 
-def _fetch_raster_bytes(source: str, bbox_mercator, size_px: int):
-    """GET an EPSG:3857 raster from NOAA. Returns raw image bytes or None."""
-    spec = _source(source)
+def _build_noaa_params(source: DataSource, bbox_mercator, size_px: int) -> dict:
+    """Translate a DataSource + tile bbox into NOAA exportImage query params."""
     xmin, ymin, xmax, ymax = bbox_mercator
     params = {
-        **spec['params'],
+        'pixelType': source.pixel_type,
         'bbox': f"{xmin},{ymin},{xmax},{ymax}",
-        'bboxSR': 3857,
-        'imageSR': 3857,
+        'bboxSR': source.image_sr,
+        'imageSR': source.image_sr,
         'size': f"{size_px},{size_px}",
         'format': 'tiff',
         'interpolation': 'RSP_BilinearInterpolation',
         'f': 'image',
     }
+    if source.nodata is not None:
+        params['noData'] = source.nodata
+        params['noDataInterpretation'] = 'esriNoDataMatchAny'
+    if source.rendering_rule is not None:
+        params['renderingRule'] = source.rendering_rule
+    if source.extra_params:
+        params.update(source.extra_params)
+    return params
+
+
+def _fetch_raster_bytes(source: DataSource, bbox_mercator, size_px: int):
+    """GET an EPSG:3857 raster from NOAA. Returns raw image bytes or None."""
+    params = _build_noaa_params(source, bbox_mercator, size_px)
 
     with _noaa_semaphore:
         try:
-            resp = _session.get(spec['url'], params=params,
-                                timeout=HTTP_TIMEOUT_S)
+            resp = _session.get(source.url, params=params,
+                                timeout=source.timeout_s)
         except requests.RequestException as e:
-            print(f"[NOAA] {source}: request failed: {e}")
+            print(f"[NOAA] {source.id}: request failed: {e}")
             return None
 
     if resp.status_code != 200:
-        print(f"[NOAA] {source}: HTTP {resp.status_code}")
+        print(f"[NOAA] {source.id}: HTTP {resp.status_code}")
         return None
     if 'image' not in resp.headers.get('Content-Type', ''):
-        print(f"[NOAA] {source}: unexpected content-type "
+        print(f"[NOAA] {source.id}: unexpected content-type "
               f"{resp.headers.get('Content-Type')!r}")
         return None
     return resp.content
 
 
-def _decode_raster(raw_bytes, expected_size: int, source: str = None):
+def _decode_raster(raw_bytes, expected_size: int, source: DataSource):
     """
     Decode TIFF bytes -> 2-D float32 ndarray with NaN for nodata.
     Returns None if the response wasn't a usable single-band float raster.
@@ -228,21 +199,19 @@ def _decode_raster(raw_bytes, expected_size: int, source: str = None):
     # Coerce sentinel nodata to NaN. The |v|>=11000 fallback catches the
     # large-magnitude sentinels (-32768, +/-1e6, ...), but several NOAA
     # sources use -9999, which sits inside the plausible-elevation range
-    # and slips through. Mask the source-specific sentinel exactly to fix
+    # and slips through. Masking the source-specific sentinel exactly fixes
     # the "looks like very deep water at no-coverage pixels" artifact and
-    # to let the worker's all-nodata-tile detection actually trigger.
-    sentinel = None
-    if source is not None:
-        sentinel = _SOURCE_SPEC.get(source, {}).get('params', {}).get('noData')
-    if sentinel is not None:
-        arr = np.where((np.abs(arr) >= 11000.0) | (arr == np.float32(sentinel)),
-                       np.nan, arr)
+    # lets the worker's all-nodata-tile detection actually trigger.
+    if source.nodata is not None:
+        arr = np.where(
+            (np.abs(arr) >= 11000.0) | (arr == np.float32(source.nodata)),
+            np.nan, arr)
     else:
         arr = np.where(np.abs(arr) >= 11000.0, np.nan, arr)
     return arr
 
 
-def _load_or_fetch(source: str, z: int, x: int, y: int,
+def _load_or_fetch(source: DataSource, z: int, x: int, y: int,
                    bbox_mercator, size_px: int, cache_dir: str):
     """Disk-cached float32 raster for a tile bbox. Array or None."""
     cache_path = os.path.join(cache_dir, f"{z}_{x}_{y}.tiff")
@@ -281,9 +250,25 @@ def fetch_tile_raster(data_source: str, resolution: int,
     """
     Get the raw float32 elevation raster for a tile, including a BUFFER_PX
     margin on every edge so the client can run gradient/Gaussian analyses
-    without edge seams. Returns (arr, cellsize_m, buffer_px) or None.
+    without edge seams.
+
+    Returns:
+        (arr, cellsize_m, buffer_px) on success.
+        UNKNOWN_SOURCE                if `data_source` is not in the registry.
+        None                          on any other failure (out of zoom range,
+                                      NOAA error, decode failure).
+
+    The unknown-source case is split out so the Flask layer can return 400
+    instead of 503 — and so that the disk cache directory always comes from
+    the resolved registry entry, never from the (possibly bogus) request
+    string. That closes the cache-mislabelling bug where `/raster/typo/...`
+    used to silently serve dem-tiles bytes but cache them under `typo/`.
     """
-    if z < 0 or z > 22:
+    source = get_source(data_source)
+    if source is None:
+        return UNKNOWN_SOURCE
+
+    if z < source.min_zoom or z > source.max_zoom:
         return None
 
     src_size = max(OUTPUT_TILE_PX, int(resolution))
@@ -291,8 +276,8 @@ def fetch_tile_raster(data_source: str, resolution: int,
     buffer_frac = BUFFER_PX / src_size
     fetch_bbox = expand_bbox(tile_bbox_mercator(z, x, y), buffer_frac)
 
-    cache_dir = os.path.join(raster_root, data_source, str(src_size))
-    arr = _load_or_fetch(data_source, z, x, y,
+    cache_dir = os.path.join(raster_root, source.cache_key, str(src_size))
+    arr = _load_or_fetch(source, z, x, y,
                          fetch_bbox, fetch_size, cache_dir)
     if arr is None:
         return None
