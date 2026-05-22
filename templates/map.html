@@ -20,14 +20,11 @@
 
         <div class="panel-section">
             <label class="field-label">Basemap</label>
-            <div class="basemap-grid" id="basemap-grid">
-                <button class="basemap-btn active" data-basemap="dark-gray-vector">Dark</button>
-                <button class="basemap-btn" data-basemap="streets-vector">Streets</button>
-                <button class="basemap-btn" data-basemap="satellite">Satellite</button>
-                <button class="basemap-btn" data-basemap="hybrid">Hybrid</button>
-                <button class="basemap-btn" data-basemap="oceans">Oceans</button>
-                <button class="basemap-btn" data-basemap="topo-vector">Topographic</button>
-            </div>
+            <!-- Populated on load from GET /basemaps. The grid is
+                 deliberately empty in markup; the registry in
+                 src/basemap_sources.py is the single source of truth
+                 for what appears here, including button order. -->
+            <div class="basemap-grid" id="basemap-grid"></div>
             <p class="field-hint">Underlying map shown beneath bathymetry.</p>
         </div>
 
@@ -64,6 +61,27 @@
                 <div class="measure-primary" id="measure-primary">— nm</div>
                 <div class="measure-secondary" id="measure-secondary">—</div>
             </div>
+        </div>
+
+        <!-- Spotfinder runs: a doorway button to the fullscreen runs
+             modal. The list, per-run toggles, opacity slider, and delete
+             all live in the modal — this button only shows the count
+             summary ("N saved · M active") so the sidebar stays compact
+             and there is exactly one place to manage runs. -->
+        <div class="panel-section">
+            <button class="sf-runs-button" id="sf-runs-open-btn" type="button"
+                    aria-haspopup="dialog" aria-controls="sf-runs-modal">
+                <div class="sf-runs-button-text">
+                    <div class="sf-runs-button-title">Spotfinder runs</div>
+                    <div class="sf-runs-button-sub" id="sf-runs-button-sub">No runs yet</div>
+                </div>
+                <svg class="sf-runs-button-chevron" width="16" height="16"
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                    <polyline points="9 18 15 12 9 6"/>
+                </svg>
+            </button>
         </div>
     </aside>
 
@@ -166,6 +184,57 @@
     </aside>
     {% endfor %}
 
+    <!-- Spotfinder trigger. Bottom-left FAB that opens the Spotfinder
+         panel. While the panel is open, the FAB is hidden; closing the
+         panel restores it. -->
+    <button id="spotfinder-fab" class="spotfinder-fab" type="button"
+            aria-label="Open Spotfinder"
+            aria-haspopup="dialog"
+            aria-expanded="false">
+        <svg class="spotfinder-fab-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2l1.6 4.8L18 8l-4.4 1.4L12 14l-1.6-4.6L6 8l4.4-1.2z"/>
+            <path d="M19 14l.8 2.2 2.2.8-2.2.6-.8 2.4-.8-2.4-2.2-.6 2.2-.8z"/>
+            <path d="M5 16l.6 1.6 1.6.6-1.6.6L5 20.4l-.6-1.6L2.8 18.2l1.6-.6z"/>
+        </svg>
+        <span class="spotfinder-fab-label">Spotfinder</span>
+    </button>
+
+    <aside id="spotfinder-panel" class="spotfinder-panel collapsed"
+           role="dialog" aria-label="Spotfinder">
+        <button class="panel-close" id="spotfinder-panel-close" aria-label="Close Spotfinder">×</button>
+        <div class="panel-header">
+            <span class="spotfinder-eyebrow">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.6 4.8L18 8l-4.4 1.4L12 14l-1.6-4.6L6 8l4.4-1.2z"/><path d="M19 14l.8 2.2 2.2.8-2.2.6-.8 2.4-.8-2.4-2.2-.6 2.2-.8z"/></svg>
+                Spotfinder
+            </span>
+            <h2>Define a search area</h2>
+            <p class="panel-sub">Click and drag on the map to draw a bounding box. Spotfinder will analyse the area you select.</p>
+        </div>
+
+        <div class="panel-section">
+            <div class="field-row">
+                <label class="field-label">Selection</label>
+                <span class="pending-tag" id="spotfinder-status-tag">Undrawn</span>
+            </div>
+            <div class="spotfinder-bbox-readout" id="spotfinder-bbox-readout">
+                <div class="bbox-cell">
+                    <span class="bbox-cell-label">NE</span>
+                    <span class="bbox-cell-value" id="spotfinder-ne">—</span>
+                </div>
+                <div class="bbox-cell">
+                    <span class="bbox-cell-label">SW</span>
+                    <span class="bbox-cell-value" id="spotfinder-sw">—</span>
+                </div>
+            </div>
+            <p class="field-hint" id="spotfinder-hint">Drag on the map to draw a rectangle.</p>
+        </div>
+
+        <div class="panel-actions">
+            <button class="ghost-btn" id="spotfinder-redraw-btn" disabled>Redraw</button>
+            <button class="apply-btn" id="spotfinder-continue-btn" disabled>Continue to Spotfinder</button>
+        </div>
+    </aside>
+
     <div id="depth-card" class="depth-card hidden" role="dialog" aria-label="Location info">
         <button class="depth-close" id="depth-close" aria-label="Close">×</button>
         <div class="depth-label">Depth</div>
@@ -176,12 +245,57 @@
         </div>
     </div>
 
+    <!-- Spotfinder runs modal. Near-full-screen takeover that is the one
+         place to manage saved runs. Opened by #sf-runs-open-btn in the
+         left sidebar; closed via X, ESC, backdrop click, or Apply.
+         Local selection state lives in map.js — the modal's footer
+         "Apply" button commits it; closing without applying prompts to
+         discard if the selection was modified. -->
+    <div id="sf-runs-modal" class="sf-runs-modal hidden" aria-hidden="true">
+        <div class="sf-runs-modal-backdrop" id="sf-runs-modal-backdrop"></div>
+        <div class="sf-runs-modal-card" role="dialog" aria-modal="true"
+             aria-labelledby="sf-runs-modal-title"
+             aria-describedby="sf-runs-modal-sub">
+            <header class="sf-runs-modal-header">
+                <div class="sf-runs-modal-titles">
+                    <h2 id="sf-runs-modal-title">Spotfinder runs</h2>
+                    <span class="sf-runs-modal-counter" id="sf-runs-modal-counter">0 saved · 0 selected</span>
+                </div>
+                <button class="sf-runs-modal-close" id="sf-runs-modal-close"
+                        type="button" aria-label="Close runs">×</button>
+            </header>
+            <p class="sf-runs-modal-sub" id="sf-runs-modal-sub">
+                Select one or more runs to overlay on the map. Multiple
+                runs stack.
+            </p>
+            <div class="sf-runs-modal-body" id="sf-runs-modal-body"></div>
+            <footer class="sf-runs-modal-footer">
+                <div class="sf-runs-modal-footer-left">
+                    <button class="ghost-btn" id="sf-runs-select-all" type="button">Select all</button>
+                    <button class="ghost-btn" id="sf-runs-clear" type="button">Clear selection</button>
+                </div>
+                <div class="sf-runs-modal-footer-right">
+                    <label class="sf-runs-opacity-wrap" for="sf-runs-global-opacity">
+                        <span class="sf-runs-opacity-label">Opacity</span>
+                        <input id="sf-runs-global-opacity" class="slider sf-runs-opacity-slider"
+                               type="range" min="0" max="100" value="75">
+                        <span class="sf-runs-opacity-val" id="sf-runs-global-opacity-val">75%</span>
+                    </label>
+                    <button class="apply-btn sf-runs-apply" id="sf-runs-apply" type="button">
+                        Hide all runs
+                    </button>
+                </div>
+            </footer>
+        </div>
+    </div>
+
 </div>
 
 <script src="https://js.arcgis.com/4.26/"></script>
 <script>
     const map_layers = {{map_layers | tojson}};
 </script>
+<script src="static/spotfinder-storage.js"></script>
 <script src="static/map.js"></script>
 
 {% endblock %}

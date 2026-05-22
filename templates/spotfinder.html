@@ -1,0 +1,150 @@
+{% extends "index.html" %}
+
+{% block title %}Spotfinder · FishFinder{% endblock %}
+
+{% block main_content %}
+
+<div class="spotfinder-page">
+    <header class="spotfinder-page-header">
+        <a class="spotfinder-back" href="/">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+            <span>Back to map</span>
+        </a>
+        <div class="spotfinder-title">
+            <span class="spotfinder-eyebrow">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.6 4.8L18 8l-4.4 1.4L12 14l-1.6-4.6L6 8l4.4-1.2z"/><path d="M19 14l.8 2.2 2.2.8-2.2.6-.8 2.4-.8-2.4-2.2-.6 2.2-.8z"/></svg>
+                Spotfinder
+            </span>
+            <h1>Bounding box analysis</h1>
+            <p class="spotfinder-page-sub">Configure the algorithm and review the results for the area you selected.</p>
+        </div>
+    </header>
+
+    <section class="spotfinder-card">
+        <div class="spotfinder-card-header">
+            <h2>Search area</h2>
+            <span class="spotfinder-card-tag" id="bbox-status-tag">No selection</span>
+        </div>
+        <div class="bbox-grid">
+            <div class="bbox-cell">
+                <span class="bbox-cell-label">North</span>
+                <span class="bbox-cell-value" id="bbox-n">—</span>
+            </div>
+            <div class="bbox-cell">
+                <span class="bbox-cell-label">South</span>
+                <span class="bbox-cell-value" id="bbox-s">—</span>
+            </div>
+            <div class="bbox-cell">
+                <span class="bbox-cell-label">East</span>
+                <span class="bbox-cell-value" id="bbox-e">—</span>
+            </div>
+            <div class="bbox-cell">
+                <span class="bbox-cell-label">West</span>
+                <span class="bbox-cell-value" id="bbox-w">—</span>
+            </div>
+        </div>
+        <p class="spotfinder-card-hint" id="bbox-hint">
+            No bounding box was supplied. Return to the map and draw an area before running Spotfinder.
+        </p>
+    </section>
+
+    <section class="spotfinder-card">
+        <div class="spotfinder-card-header">
+            <h2>Algorithm configuration</h2>
+            <span class="spotfinder-card-tag muted">Coming soon</span>
+        </div>
+        <div class="spotfinder-placeholder">
+            <p>Tuning knobs for the Spotfinder pipeline will appear in this section.</p>
+        </div>
+    </section>
+
+    <!-- Results section. Shows one of four states, chosen by .sf-results
+         data-state: "empty" (no run yet), "running" (in progress),
+         "error" (run failed), "ready" (run complete + rendered). -->
+    <section class="spotfinder-card sf-results" id="sf-results" data-state="empty">
+        <div class="spotfinder-card-header">
+            <h2>Results &amp; analytics</h2>
+            <span class="spotfinder-card-tag muted" id="sf-results-tag">No run yet</span>
+        </div>
+
+        <!-- EMPTY: waiting for the user to press Run. -->
+        <div class="sf-results-pane sf-results-empty">
+            <div class="spotfinder-placeholder">
+                <p>Press <strong>Run Spotfinder</strong> below to analyse the selected area.</p>
+            </div>
+        </div>
+
+        <!-- RUNNING: live progress bar + stage label. -->
+        <div class="sf-results-pane sf-results-running">
+            <div class="sf-progress-row">
+                <span class="sf-progress-label" id="sf-progress-label">Starting…</span>
+                <span class="sf-progress-pct" id="sf-progress-pct">0%</span>
+            </div>
+            <div class="sf-progress-track">
+                <div class="sf-progress-fill" id="sf-progress-fill" style="width: 0%"></div>
+            </div>
+            <p class="spotfinder-card-hint">This will take a few seconds. Leave the tab open.</p>
+        </div>
+
+        <!-- ERROR: surfaced when runSpotfinder rejects or storage fails. -->
+        <div class="sf-results-pane sf-results-error">
+            <div class="sf-error-box">
+                <strong>Spotfinder failed.</strong>
+                <p id="sf-error-message">Something went wrong.</p>
+                <button class="ghost-btn" id="sf-retry-btn">Try again</button>
+            </div>
+        </div>
+
+        <!-- READY: completed run summary + view-on-map CTA. -->
+        <div class="sf-results-pane sf-results-ready">
+            <div class="sf-metrics">
+                <div class="sf-metric">
+                    <span class="sf-metric-label">Spots found</span>
+                    <span class="sf-metric-value" id="sf-metric-spots">—</span>
+                </div>
+                <div class="sf-metric">
+                    <span class="sf-metric-label">Runtime</span>
+                    <span class="sf-metric-value" id="sf-metric-runtime">—</span>
+                </div>
+                <div class="sf-metric">
+                    <span class="sf-metric-label">Resolution</span>
+                    <span class="sf-metric-value" id="sf-metric-resolution">—</span>
+                </div>
+                <div class="sf-metric">
+                    <span class="sf-metric-label">Source</span>
+                    <span class="sf-metric-value" id="sf-metric-source">—</span>
+                </div>
+            </div>
+
+            <div class="sf-top-spots">
+                <div class="sf-top-spots-header">Top spots</div>
+                <ol class="sf-top-spots-list" id="sf-top-spots-list">
+                    <!-- populated dynamically -->
+                </ol>
+            </div>
+
+            <div class="sf-ready-actions">
+                <button class="ghost-btn" id="sf-rerun-btn">Run again</button>
+                <a class="apply-btn sf-view-btn" id="sf-view-btn" href="#">
+                    <span>View on map</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <div class="spotfinder-run-row">
+        <button class="apply-btn spotfinder-run-btn" id="spotfinder-run-btn"
+                disabled
+                aria-disabled="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.6 4.8L18 8l-4.4 1.4L12 14l-1.6-4.6L6 8l4.4-1.2z"/><path d="M19 14l.8 2.2 2.2.8-2.2.6-.8 2.4-.8-2.4-2.2-.6 2.2-.8z"/></svg>
+            <span id="spotfinder-run-label">Run Spotfinder</span>
+        </button>
+    </div>
+</div>
+
+<script src="static/spotfinder-runner.js"></script>
+<script src="static/spotfinder-storage.js"></script>
+<script src="static/spotfinder.js"></script>
+
+{% endblock %}

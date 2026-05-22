@@ -98,6 +98,31 @@ const _sourcesReady = fetch(`${baseurl}/sources`, { cache: 'no-store' })
     });
 
 
+// ─── Basemap registry (one source of truth, mirrors /sources) ──
+// Also kicked off at module load so it overlaps the AMD require()
+// dependency download. Failure-mode is different from /sources: the
+// basemap grid is purely cosmetic — losing it must not leave the user
+// without basemap controls. We fall back to a hardcoded six-Esri list
+// so the switcher remains useful even if the Flask backend is dead.
+const _BASEMAP_FALLBACK = {
+    basemaps: [
+        { id: "dark-gray-vector", display_name: "Dark",        provider: "esri", value: "dark-gray-vector", attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+        { id: "streets-vector",   display_name: "Streets",     provider: "esri", value: "streets-vector",   attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+        { id: "satellite",        display_name: "Satellite",   provider: "esri", value: "satellite",        attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+        { id: "hybrid",           display_name: "Hybrid",      provider: "esri", value: "hybrid",           attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+        { id: "oceans",           display_name: "Oceans",      provider: "esri", value: "oceans",           attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+        { id: "topo-vector",      display_name: "Topographic", provider: "esri", value: "topo-vector",      attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+    ],
+};
+const _basemapsReady = fetch(`${baseurl}/basemaps`, { cache: 'no-store' })
+    .then(r => r.ok ? r.json()
+                    : Promise.reject(new Error(`/basemaps HTTP ${r.status}`)))
+    .catch(err => {
+        console.warn('[FishFinder] /basemaps unavailable, using Esri fallback:', err);
+        return _BASEMAP_FALLBACK;
+    });
+
+
 // ─── Browser-presence heartbeat ─────────────────────────────────
 // The Python server self-terminates ~3s after the last ping, so closing
 // the tab kills the backing process automatically. Uses sendBeacon
@@ -427,16 +452,26 @@ async function getRenderedCanvas(url, analysisKey, param, signal) {
 
 require([
     "esri/Map",
+    "esri/Basemap",
     "esri/views/MapView",
     "esri/layers/BaseTileLayer",
+    "esri/layers/WebTileLayer",
+    "esri/layers/TileLayer",
     "esri/layers/GraphicsLayer",
+    "esri/layers/MediaLayer",
     "esri/layers/support/TileInfo",
+    "esri/layers/support/ImageElement",
+    "esri/layers/support/ExtentAndRotationGeoreference",
     "esri/geometry/SpatialReference",
     "esri/Graphic",
     "esri/geometry/Point",
     "esri/geometry/Polyline",
-], (EsriMap, MapView, BaseTileLayer, GraphicsLayer, TileInfo, SpatialReference,
-    Graphic, Point, Polyline) => {
+    "esri/geometry/Polygon",
+    "esri/geometry/Extent",
+], (EsriMap, Basemap, MapView, BaseTileLayer, WebTileLayer, TileLayer,
+    GraphicsLayer, MediaLayer, TileInfo,
+    ImageElement, ExtentAndRotationGeoreference, SpatialReference,
+    Graphic, Point, Polyline, Polygon, Extent) => {
     // NOTE: this callback is intentionally NOT `async`. ArcGIS 4.26 ships
     // Dojo's AMD loader, which silently fails to invoke an async-function
     // callback — no error, no console message, the whole boot just stops.
@@ -599,12 +634,13 @@ require([
 
     syncParamControl();
 
-    const markerLayer  = new GraphicsLayer({ listMode: "hide" });
-    const measureLayer = new GraphicsLayer({ listMode: "hide" });
+    const markerLayer    = new GraphicsLayer({ listMode: "hide" });
+    const measureLayer   = new GraphicsLayer({ listMode: "hide" });
+    const spotfinderLayer = new GraphicsLayer({ listMode: "hide" });
 
     const map = new EsriMap({
         basemap: "dark-gray-vector",
-        layers: [markerLayer, measureLayer],
+        layers: [markerLayer, measureLayer, spotfinderLayer],
     });
 
     const view = new MapView({
@@ -725,9 +761,12 @@ require([
             currentLayer = null;
         }
 
-        const markerIdx = map.layers.indexOf(markerLayer);
-        if (markerIdx >= 0) map.layers.add(newLayer, markerIdx);
-        else                map.layers.add(newLayer);
+        // Bathymetry sits at the very bottom of the overlay stack so any
+        // active Spotfinder heatmap + spots paint above it. Inserting at
+        // markerIdx (the original approach) puts a re-applied bathymetry
+        // layer above already-active heatmaps, hiding them under the
+        // opaque tile pixels.
+        map.layers.add(newLayer, 0);
 
         showLoading(cfg, mode);
 
@@ -1297,6 +1336,13 @@ require([
             captureMeasurePoint(event.mapPoint);
             return;
         }
+        // Spotfinder is a drag-only interaction; a click while the
+        // panel is open should not fall through to a depth lookup
+        // (which would drop a marker over the user's selection).
+        if (spotfinderActive) return;
+        // Spot dots are visual-only — clicks pass through to the depth
+        // lookup so the user can read sea-floor depth at a spot without
+        // an extra popup blocking the existing depth card.
         const { latitude: lat, longitude: lon } = event.mapPoint;
         lookupDepth(lat, lon, event.mapPoint);
     });
@@ -1528,18 +1574,92 @@ require([
 
 
     // ─── Basemap switch ────────────────────────────────────
-    // ArcGIS basemap IDs are accepted as a string assignment to
-    // `map.basemap` — the SDK swaps the underlying layer set in place.
-    // We keep our marker, measure, and tile layers in `map.layers`, which
-    // the basemap swap doesn't touch, so no cleanup is needed here.
+    //
+    // The button grid is populated from /basemaps (kicked off at module
+    // load — see `_basemapsReady` above). The map itself was already
+    // built with a hardcoded Esri default ("dark-gray-vector") so the
+    // user sees a basemap from the first frame, independent of when
+    // (or whether) the registry response lands. If /basemaps fails the
+    // fallback list of six Esri entries renders instead — the switcher
+    // is never absent.
+    //
+    // setBasemap() dispatches by provider:
+    //   - "esri":        string assignment, same behavior as before.
+    //   - "xyz":         WebTileLayer (with TileInfo override when the
+    //                    registry specifies a non-default tile size, so
+    //                    ArcGIS doesn't request the wrong row/col count
+    //                    for a 512px tile source like MapTiler).
+    //   - "arcgis_rest": TileLayer pointed at a MapServer URL. Tile
+    //                    size and max-zoom come from the service's
+    //                    published tile info — we deliberately do NOT
+    //                    override them from the registry.
+    // Marker / measure / bathymetry layers live in `map.layers` and are
+    // untouched by `map.basemap` reassignment, so nothing to clean up.
+    let currentBasemapId = "dark-gray-vector";  // matches the literal at map construction
+    let basemapsById = {};
+
+    function setBasemap(entry) {
+        if (entry.provider === "esri") {
+            map.basemap = entry.value;
+            return;
+        }
+        if (entry.provider === "xyz") {
+            const layerOpts = {
+                urlTemplate: entry.value,
+                copyright:   entry.attribution,
+            };
+            if (entry.tile_size != null) {
+                layerOpts.tileInfo = TileInfo.create({
+                    spatialReference: SpatialReference.WebMercator,
+                    size: entry.tile_size,
+                });
+            }
+            const layer = new WebTileLayer(layerOpts);
+            if (entry.max_zoom != null) layer.maxZoom = entry.max_zoom;
+            map.basemap = new Basemap({ baseLayers: [layer] });
+            return;
+        }
+        if (entry.provider === "arcgis_rest") {
+            const layer = new TileLayer({
+                url:       entry.value,
+                copyright: entry.attribution,
+            });
+            map.basemap = new Basemap({ baseLayers: [layer] });
+            return;
+        }
+        console.warn("[basemap] unknown provider:", entry.provider, entry);
+    }
+
+    function renderBasemapGrid(entries) {
+        $basemapGrid.innerHTML = "";
+        for (const entry of entries) {
+            const btn = document.createElement("button");
+            btn.className = "basemap-btn";
+            btn.dataset.basemapId = entry.id;
+            btn.textContent = entry.display_name;
+            if (entry.tooltip) btn.title = entry.tooltip;
+            if (entry.id === currentBasemapId) btn.classList.add("active");
+            $basemapGrid.appendChild(btn);
+        }
+    }
+
     $basemapGrid.addEventListener("click", (e) => {
-        const btn = e.target.closest(".basemap-btn[data-basemap]");
+        const btn = e.target.closest(".basemap-btn[data-basemap-id]");
         if (!btn) return;
-        const id = btn.dataset.basemap;
-        if (!id || map.basemap === id) return;
-        map.basemap = id;
+        const id = btn.dataset.basemapId;
+        if (id === currentBasemapId) return;
+        const entry = basemapsById[id];
+        if (!entry) return;
+        setBasemap(entry);
+        currentBasemapId = id;
         $basemapGrid.querySelectorAll(".basemap-btn")
             .forEach(b => b.classList.toggle("active", b === btn));
+    });
+
+    _basemapsReady.then((payload) => {
+        const entries = (payload && payload.basemaps) || [];
+        basemapsById = Object.fromEntries(entries.map(e => [e.id, e]));
+        renderBasemapGrid(entries);
     });
 
 
@@ -1743,4 +1863,771 @@ require([
 
     // Initial paint so the disabled state on Undo/Clear is correct.
     syncMeasureUI();
+
+
+    // ─── Spotfinder ────────────────────────────────────────
+    // Bottom-left FAB opens a panel; while the panel is open, the user
+    // can left-click-drag on the map to draw a geo-anchored rectangle.
+    // On release we capture the NE/SW bounds and let the user continue
+    // to /spotfinder with the bbox in the URL.
+    //
+    // Two interaction rules:
+    //   1. While active, map panning is suppressed via
+    //      `event.stopPropagation()` on the ArcGIS drag event — same
+    //      mechanism used in the docs to disable pan during sketching.
+    //      Without this the drag would scroll the map instead of
+    //      drawing a box.
+    //   2. The rectangle is rendered via a Polygon in `spotfinderLayer`
+    //      so it stays anchored as the user zooms / pans (after the
+    //      panel is closed and they want to come back later).
+    //
+    // Mutually exclusive with the measurement tool: entering Spotfinder
+    // exits any active measurement session so the cursor/click semantics
+    // don't conflict. Existing measurement geometry stays on screen.
+
+    const $spotfinderFab       = document.getElementById("spotfinder-fab");
+    const $spotfinderPanel     = document.getElementById("spotfinder-panel");
+    const $spotfinderClose     = document.getElementById("spotfinder-panel-close");
+    const $spotfinderStatusTag = document.getElementById("spotfinder-status-tag");
+    const $spotfinderHint      = document.getElementById("spotfinder-hint");
+    const $spotfinderNE        = document.getElementById("spotfinder-ne");
+    const $spotfinderSW        = document.getElementById("spotfinder-sw");
+    const $spotfinderRedraw    = document.getElementById("spotfinder-redraw-btn");
+    const $spotfinderContinue  = document.getElementById("spotfinder-continue-btn");
+
+    const SPOTFINDER_FILL_SYMBOL = {
+        type: "simple-fill",
+        color: [179, 136, 255, 0.16],
+        outline: { color: [179, 136, 255, 0.95], width: 2, style: "solid" },
+    };
+    const SPOTFINDER_DRAFT_SYMBOL = {
+        type: "simple-fill",
+        color: [179, 136, 255, 0.10],
+        outline: { color: [179, 136, 255, 0.85], width: 1.5, style: "dash" },
+    };
+
+    let spotfinderActive = false;   // panel open?
+    let spotfinderDrawing = false;  // mid-drag?
+    let spotfinderStart   = null;   // {lon, lat} drag origin
+    let spotfinderBounds  = null;   // {n, s, e, w} once a rectangle exists
+
+    function fmtCoord(lat, lon) {
+        const ns = lat >= 0 ? "N" : "S";
+        const ew = lon >= 0 ? "E" : "W";
+        return `${Math.abs(lat).toFixed(5)}° ${ns}, ${Math.abs(lon).toFixed(5)}° ${ew}`;
+    }
+
+    function setSpotfinderStatus(state) {
+        // state: "undrawn" | "drawing" | "defined"
+        $spotfinderStatusTag.classList.remove("visible", "undrawn", "drawing", "defined");
+        $spotfinderStatusTag.classList.add("visible", state);
+        if (state === "drawing") {
+            $spotfinderStatusTag.textContent = "Drawing…";
+        } else if (state === "defined") {
+            $spotfinderStatusTag.textContent = "Defined";
+        } else {
+            $spotfinderStatusTag.textContent = "Undrawn";
+        }
+    }
+
+    function syncSpotfinderUI() {
+        const hasBounds = spotfinderBounds !== null;
+        $spotfinderRedraw.disabled  = !hasBounds;
+        $spotfinderContinue.disabled = !hasBounds;
+        if (hasBounds) {
+            setSpotfinderStatus("defined");
+            $spotfinderNE.textContent = fmtCoord(
+                spotfinderBounds.n, spotfinderBounds.e);
+            $spotfinderSW.textContent = fmtCoord(
+                spotfinderBounds.s, spotfinderBounds.w);
+            $spotfinderHint.textContent =
+                "Continue to Spotfinder, or press Redraw to start over.";
+        } else if (spotfinderDrawing) {
+            setSpotfinderStatus("drawing");
+            $spotfinderNE.textContent = "—";
+            $spotfinderSW.textContent = "—";
+            $spotfinderHint.textContent = "Release to lock in the rectangle.";
+        } else {
+            setSpotfinderStatus("undrawn");
+            $spotfinderNE.textContent = "—";
+            $spotfinderSW.textContent = "—";
+            $spotfinderHint.textContent = "Drag on the map to draw a rectangle.";
+        }
+    }
+
+    function rectFromCorners(a, b) {
+        // a, b are {lon, lat}. Returns a Polygon ring in geographic
+        // coords (wkid 4326). Web Mercator handles wrapping for us
+        // when ArcGIS reprojects for display — we just need a sane
+        // ring with consistent winding.
+        const w = Math.min(a.lon, b.lon);
+        const e = Math.max(a.lon, b.lon);
+        const s = Math.min(a.lat, b.lat);
+        const n = Math.max(a.lat, b.lat);
+        const ring = [[w, s], [w, n], [e, n], [e, s], [w, s]];
+        return {
+            polygon: new Polygon({
+                rings: [ring],
+                spatialReference: { wkid: 4326 },
+            }),
+            bounds: { n, s, e, w },
+        };
+    }
+
+    function drawSpotfinderRect(a, b, symbol) {
+        spotfinderLayer.removeAll();
+        const { polygon } = rectFromCorners(a, b);
+        spotfinderLayer.add(new Graphic({
+            geometry: polygon,
+            symbol,
+        }));
+    }
+
+    function clearSpotfinderRect() {
+        spotfinderLayer.removeAll();
+        spotfinderBounds = null;
+        spotfinderStart  = null;
+        spotfinderDrawing = false;
+    }
+
+    function openSpotfinderPanel() {
+        // Mutually exclusive with measure mode — would otherwise fight
+        // for the click/drag semantics.
+        if (measureMode) setMeasureMode(false);
+        spotfinderActive = true;
+        $workspace.classList.add("spotfinder-active");
+        $spotfinderPanel.classList.remove("collapsed");
+        $spotfinderFab.classList.add("hidden");
+        $spotfinderFab.setAttribute("aria-expanded", "true");
+        syncSpotfinderUI();
+    }
+
+    function closeSpotfinderPanel() {
+        spotfinderActive = false;
+        $workspace.classList.remove("spotfinder-active");
+        $spotfinderPanel.classList.add("collapsed");
+        $spotfinderFab.classList.remove("hidden");
+        $spotfinderFab.setAttribute("aria-expanded", "false");
+        // Closing cleans up everything related to drawing per the
+        // brief — drop the rectangle, status, and any in-flight drag.
+        clearSpotfinderRect();
+        syncSpotfinderUI();
+    }
+
+    $spotfinderFab.addEventListener("click", openSpotfinderPanel);
+    $spotfinderClose.addEventListener("click", closeSpotfinderPanel);
+
+    // Keyboard accessibility: real <button>, so Enter/Space already
+    // activate it. Add Escape-to-close while the panel is open so
+    // keyboard users can bail without reaching for the mouse.
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && spotfinderActive) {
+            e.preventDefault();
+            closeSpotfinderPanel();
+        }
+    });
+
+    $spotfinderRedraw.addEventListener("click", () => {
+        clearSpotfinderRect();
+        syncSpotfinderUI();
+    });
+
+    $spotfinderContinue.addEventListener("click", () => {
+        if (!spotfinderBounds) return;
+        const { n, s, e, w } = spotfinderBounds;
+        const q = new URLSearchParams({
+            n: n.toFixed(6),
+            s: s.toFixed(6),
+            e: e.toFixed(6),
+            w: w.toFixed(6),
+        });
+        window.location.href = `/spotfinder?${q.toString()}`;
+    });
+
+    // Drag handler. ArcGIS's drag event fires for both pan and pinch;
+    // we only intercept it when the Spotfinder panel is open. The
+    // stopPropagation() call is what disables panning — ArcGIS's
+    // default handler runs in capture phase after listeners, so as
+    // long as we stop the event the map will not pan.
+    view.on("drag", (event) => {
+        if (!spotfinderActive) return;
+        if (event.button !== 0) return;       // ignore right/middle drag
+        event.stopPropagation();
+
+        const screenPt = { x: event.x, y: event.y };
+        const mapPt = view.toMap(screenPt);
+        if (!mapPt) return;
+        const lat = mapPt.latitude;
+        const lon = mapPt.longitude;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+        if (event.action === "start") {
+            spotfinderDrawing = true;
+            spotfinderBounds  = null;
+            spotfinderStart   = { lon, lat };
+            spotfinderLayer.removeAll();
+            syncSpotfinderUI();
+        } else if (event.action === "update" && spotfinderStart) {
+            drawSpotfinderRect(spotfinderStart, { lon, lat },
+                               SPOTFINDER_DRAFT_SYMBOL);
+        } else if (event.action === "end" && spotfinderStart) {
+            spotfinderDrawing = false;
+            const { bounds } = rectFromCorners(spotfinderStart, { lon, lat });
+            // Reject degenerate boxes (a click without movement). The
+            // user shouldn't see a status flip on a stray click.
+            const dx = Math.abs(bounds.e - bounds.w);
+            const dy = Math.abs(bounds.n - bounds.s);
+            if (dx < 1e-6 || dy < 1e-6) {
+                spotfinderLayer.removeAll();
+                spotfinderStart = null;
+                syncSpotfinderUI();
+                return;
+            }
+            drawSpotfinderRect(spotfinderStart, { lon, lat },
+                               SPOTFINDER_FILL_SYMBOL);
+            spotfinderBounds = bounds;
+            spotfinderStart  = null;
+            syncSpotfinderUI();
+        }
+    });
+
+    // Initial UI sync (so the status tag has a class and the buttons
+    // are in their disabled state from the first frame).
+    syncSpotfinderUI();
+
+
+    // ─── Spotfinder runs (sidebar doorway + fullscreen modal) ──────
+    //
+    // STATE MODEL
+    //   runs        : Map<run_id, SpotfinderResult>      every saved run
+    //   activeIds   : Set<run_id>                        currently on map
+    //   runLayers   : Map<run_id, {heatmapLayer, spotsLayer}>
+    //                  only populated for active runs — heatmap MediaLayers
+    //                  are heavy (a full georeferenced PNG per run), so we
+    //                  build them on activation and tear them down on
+    //                  deactivation rather than holding every run's layers
+    //                  in memory permanently.
+    //
+    // LAYERING
+    //   All heatmaps stack just above the bathymetry tile layer (index 0).
+    //   All spots stack just below markerLayer so they paint on top of
+    //   every heatmap regardless of which run was activated when —
+    //   otherwise a later run's heatmap would obscure an earlier run's
+    //   spots. Toolbar graphics (depth marker, measure path, draft
+    //   Spotfinder rectangle) sit above everything.
+    //
+    // UI
+    //   Sidebar shows one button ("Spotfinder runs — N saved · M active").
+    //   Clicking opens a fullscreen modal with a card per run, a global
+    //   opacity slider, and Apply/select-all/clear actions. Local
+    //   selection state inside the modal lets the user explore without
+    //   touching the map until they hit Apply.
+    //
+    // SPOT INTERACTION
+    //   Spots are purely visual markers — clicks fall through to the
+    //   depth lookup. The earlier "click a spot → open spot card" flow
+    //   was removed because the card blocked the depth card the rest of
+    //   the app uses. See the TODO above buildSpotsLayer for waypoint
+    //   save plans.
+
+    const STORE = window.FishFinderSpotfinderStorage;
+
+    const $runsButton    = document.getElementById("sf-runs-open-btn");
+    const $runsButtonSub = document.getElementById("sf-runs-button-sub");
+
+    const $modal           = document.getElementById("sf-runs-modal");
+    const $modalBackdrop   = document.getElementById("sf-runs-modal-backdrop");
+    const $modalClose      = document.getElementById("sf-runs-modal-close");
+    const $modalBody       = document.getElementById("sf-runs-modal-body");
+    const $modalCounter    = document.getElementById("sf-runs-modal-counter");
+    const $modalSelectAll  = document.getElementById("sf-runs-select-all");
+    const $modalClear      = document.getElementById("sf-runs-clear");
+    const $modalApply      = document.getElementById("sf-runs-apply");
+    const $modalOpacity    = document.getElementById("sf-runs-global-opacity");
+    const $modalOpacityVal = document.getElementById("sf-runs-global-opacity-val");
+
+    /** @type {Map<string, object>}                       */ const runs       = new Map();
+    /** @type {Set<string>}                               */ const activeIds  = new Set();
+    /** @type {Map<string, {heatmapLayer, spotsLayer}>}   */ const runLayers  = new Map();
+
+    let globalOpacity = STORE.getGlobalOpacity();
+
+
+    // ─── Formatting helpers ───────────────────────────────
+    function fmtRunTimestamp(iso) {
+        try {
+            const d = new Date(iso);
+            return d.toLocaleString(undefined, {
+                month: "short", day: "numeric",
+                hour: "numeric", minute: "2-digit",
+            });
+        } catch { return iso; }
+    }
+    function fmtBboxCenter(bbox) {
+        const lat = (bbox.north + bbox.south) / 2;
+        const lon = (bbox.east  + bbox.west)  / 2;
+        return `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+    }
+
+
+    // ─── Layer builders ───────────────────────────────────
+    // Bigger marker for higher score so the visual hierarchy matches
+    // the data. Spots are purely visual markers — clicks fall through
+    // to the depth lookup (no popup, no hitTest interception).
+    // TODO: re-add waypoint save flow (right-click menu? sidebar action?)
+    // when we wire up a persistent waypoint store.
+    const SPOT_SYMBOL_BASE = {
+        type: "simple-marker",
+        style: "circle",
+        color: [179, 136, 255, 0.92],
+        outline: { color: [255, 255, 255, 0.95], width: 1.5 },
+    };
+    function spotSymbol(score) {
+        return { ...SPOT_SYMBOL_BASE, size: 8 + score * 8 };
+    }
+
+    function buildHeatmapLayer(result) {
+        const b = result.heatmap_bounds;
+        const extent = new Extent({
+            xmin: b.west, ymin: b.south, xmax: b.east, ymax: b.north,
+            spatialReference: { wkid: 4326 },
+        });
+        const elem = new ImageElement({
+            image: result.heatmap_png_url,
+            georeference: new ExtentAndRotationGeoreference({ extent }),
+        });
+        return new MediaLayer({
+            source: [elem],
+            opacity: globalOpacity,
+            listMode: "hide",
+        });
+    }
+    function buildSpotsLayer(result) {
+        const layer = new GraphicsLayer({ listMode: "hide" });
+        for (const spot of result.spots) {
+            layer.add(new Graphic({
+                geometry: new Point({
+                    longitude: spot.lng,
+                    latitude:  spot.lat,
+                    spatialReference: { wkid: 4326 },
+                }),
+                symbol: spotSymbol(spot.score),
+            }));
+        }
+        return layer;
+    }
+
+
+    // ─── Activate / deactivate runs ───────────────────────
+    //
+    // Single source of truth for "which runs are on the map." Build
+    // lazily on activation, tear down on deactivation. activeIds is
+    // the persisted truth; runLayers is the live mirror.
+    function activateRun(runId) {
+        if (runLayers.has(runId)) return;
+        const result = runs.get(runId);
+        if (!result) return;
+        const heatmapLayer = buildHeatmapLayer(result);
+        const spotsLayer   = buildSpotsLayer(result);
+        // Heatmaps stack just above the bathymetry tile layer (which lives
+        // at index 0). Spots go directly below markerLayer so they paint
+        // on top of every heatmap, regardless of activation order — the
+        // alternative (heatmap + spots inserted together at markerIdx)
+        // lets a later run's heatmap obscure an earlier run's spots.
+        map.layers.add(heatmapLayer, 1);
+        const markerIdx = map.layers.indexOf(markerLayer);
+        const spotsIdx  = markerIdx >= 0 ? markerIdx : map.layers.length;
+        map.layers.add(spotsLayer, spotsIdx);
+        runLayers.set(runId, { heatmapLayer, spotsLayer });
+    }
+    function deactivateRun(runId) {
+        const set = runLayers.get(runId);
+        if (!set) return;
+        if (map.layers.includes(set.heatmapLayer)) map.remove(set.heatmapLayer);
+        if (map.layers.includes(set.spotsLayer))   map.remove(set.spotsLayer);
+        runLayers.delete(runId);
+    }
+
+    function applyActiveIds(nextIds) {
+        // Diff against current active set so we only touch the layers
+        // that actually changed.
+        const next = new Set(nextIds.filter(id => runs.has(id)));
+        for (const id of activeIds) {
+            if (!next.has(id)) deactivateRun(id);
+        }
+        for (const id of next) {
+            if (!activeIds.has(id)) activateRun(id);
+        }
+        activeIds.clear();
+        for (const id of next) activeIds.add(id);
+        STORE.setActiveRunIds(Array.from(activeIds));
+        updateSidebarButton();
+    }
+
+    function setGlobalOpacity(value01) {
+        globalOpacity = Math.max(0, Math.min(1, value01));
+        for (const { heatmapLayer } of runLayers.values()) {
+            heatmapLayer.opacity = globalOpacity;
+        }
+        STORE.setGlobalOpacity(globalOpacity);
+    }
+
+
+    // ─── Sidebar button ───────────────────────────────────
+    function updateSidebarButton() {
+        const saved = runs.size;
+        const active = activeIds.size;
+        if (saved === 0) {
+            $runsButtonSub.textContent = "No runs yet";
+        } else {
+            $runsButtonSub.textContent =
+                `${saved} saved · ${active} active`;
+        }
+    }
+    $runsButton.addEventListener("click", openModal);
+
+
+    // ─── Modal: open / close / discard-confirm ────────────
+    //
+    // modalOpen is the source of truth for "is the takeover visible."
+    // modalSelection is the user's pending pick — committed to activeIds
+    // only when Apply runs. Closing via X/ESC/backdrop discards it
+    // (with a confirm if it differs from the active set on the map).
+
+    let modalOpen = false;
+    /** @type {Set<string>} */ let modalSelection = new Set();
+    let lastFocusedBeforeModal = null;
+
+    function openModal() {
+        if (modalOpen) return;
+        modalOpen = true;
+        lastFocusedBeforeModal = document.activeElement;
+        modalSelection = new Set(activeIds);
+        // Slider reflects the persisted opacity. Reset every open so
+        // the user can't get a stale value from a previous session.
+        const pct = Math.round(globalOpacity * 100);
+        $modalOpacity.value = String(pct);
+        $modalOpacityVal.textContent = `${pct}%`;
+        renderModalBody();
+        updateModalChrome();
+        $modal.classList.remove("hidden");
+        $modal.setAttribute("aria-hidden", "false");
+        document.body.style.overflow = "hidden";
+        // Defer focus until after the fade-in transition starts so the
+        // first focus ring doesn't snap into place while the modal is
+        // still translucent — same trick the depth card uses on open.
+        requestAnimationFrame(() => {
+            $modalClose.focus();
+        });
+    }
+
+    function selectionDirty() {
+        if (modalSelection.size !== activeIds.size) return true;
+        for (const id of modalSelection) if (!activeIds.has(id)) return true;
+        return false;
+    }
+
+    function attemptCloseModal() {
+        // The Apply button is the only path that commits selection. Any
+        // other close path silently discards local edits — but only after
+        // a confirm if the user has actually changed something, since
+        // losing 10 toggles to a stray ESC would be infuriating.
+        if (selectionDirty()) {
+            const ok = window.confirm(
+                "Discard selection changes? Your edits to the runs picker "
+              + "haven't been applied to the map yet."
+            );
+            if (!ok) return;
+        }
+        closeModal();
+    }
+    function closeModal() {
+        modalOpen = false;
+        $modal.classList.add("hidden");
+        $modal.setAttribute("aria-hidden", "true");
+        document.body.style.overflow = "";
+        if (lastFocusedBeforeModal && lastFocusedBeforeModal.focus) {
+            lastFocusedBeforeModal.focus();
+        }
+        lastFocusedBeforeModal = null;
+    }
+
+    $modalClose.addEventListener("click", attemptCloseModal);
+    $modalBackdrop.addEventListener("click", attemptCloseModal);
+
+    // Modal keyboard: ESC closes, Enter applies. Registered at the
+    // document level so it fires regardless of which element inside
+    // the modal currently has focus.
+    document.addEventListener("keydown", (e) => {
+        if (!modalOpen) return;
+        if (e.key === "Escape") {
+            e.preventDefault();
+            attemptCloseModal();
+        } else if (e.key === "Enter") {
+            const tag = (e.target && e.target.tagName) || "";
+            // Don't hijack Enter inside text inputs / textareas — none
+            // exist in the modal today, but it costs nothing to be safe
+            // and Enter on the opacity slider naturally maps to Apply.
+            if (tag === "INPUT" && e.target.type !== "range") return;
+            if (tag === "TEXTAREA") return;
+            e.preventDefault();
+            applyModalSelection();
+        }
+    });
+
+
+    // ─── Modal: body rendering ────────────────────────────
+    function renderModalBody() {
+        if (!runs.size) {
+            $modalBody.innerHTML = `
+                <div class="sf-runs-empty">
+                    <div class="sf-runs-empty-icon" aria-hidden="true">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="1.8"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 21l-4.35-4.35"/><circle cx="11" cy="11" r="7"/>
+                        </svg>
+                    </div>
+                    <div class="sf-runs-empty-title">No Spotfinder runs yet</div>
+                    <p class="sf-runs-empty-sub">
+                        Draw a search area on the map with the Spotfinder
+                        button, then run an analysis. Completed runs save
+                        here automatically.
+                    </p>
+                </div>
+            `;
+            return;
+        }
+
+        const grid = document.createElement("div");
+        grid.className = "sf-runs-grid";
+
+        // Newest first — getAllRuns already returns in insertion (newest
+        // first) order; preserve it.
+        const sorted = Array.from(runs.values());
+
+        for (const result of sorted) {
+            const card = document.createElement("div");
+            card.className = "sf-run-card";
+            card.dataset.runId = result.run_id;
+            card.tabIndex = 0;
+            card.setAttribute("role", "button");
+            card.setAttribute("aria-pressed",
+                modalSelection.has(result.run_id) ? "true" : "false");
+
+            const spotCount = result.spots.length;
+            const spotsTxt = `${spotCount} spot${spotCount === 1 ? "" : "s"}`;
+
+            card.innerHTML = `
+                <div class="sf-run-card-thumb">
+                    <img src="${escapeHtml(result.heatmap_png_url)}"
+                         alt="Heatmap preview"
+                         loading="lazy"
+                         draggable="false">
+                    <button class="sf-run-card-delete" type="button"
+                            title="Delete this run" aria-label="Delete this run"
+                            data-action="delete">×</button>
+                    <div class="sf-run-card-check" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="3"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="sf-run-card-body">
+                    <div class="sf-run-card-title">
+                        ${escapeHtml(fmtRunTimestamp(result.timestamp))}
+                    </div>
+                    <div class="sf-run-card-meta-row">
+                        <span class="sf-run-card-meta">${escapeHtml(fmtBboxCenter(result.bbox))}</span>
+                        <span class="sf-run-card-spots">${spotsTxt}</span>
+                    </div>
+                </div>
+            `;
+            if (modalSelection.has(result.run_id)) card.classList.add("selected");
+            grid.appendChild(card);
+        }
+
+        $modalBody.innerHTML = "";
+        $modalBody.appendChild(grid);
+    }
+
+    function updateModalChrome() {
+        const saved = runs.size;
+        const sel = modalSelection.size;
+        $modalCounter.textContent = `${saved} saved · ${sel} selected`;
+
+        if (sel === 0) {
+            $modalApply.textContent = "Hide all runs";
+            // Apply with zero selected when zero are active is a no-op —
+            // disable to make that clear instead of letting the user mash
+            // it expecting something to happen.
+            $modalApply.disabled = (activeIds.size === 0);
+        } else {
+            $modalApply.textContent =
+                `Show ${sel} run${sel === 1 ? "" : "s"} on map`;
+            $modalApply.disabled = false;
+        }
+        $modalClear.disabled    = (sel === 0);
+        $modalSelectAll.disabled = (saved === 0 || sel === saved);
+    }
+
+    function toggleSelection(runId) {
+        if (modalSelection.has(runId)) modalSelection.delete(runId);
+        else                            modalSelection.add(runId);
+        const card = $modalBody.querySelector(
+            `.sf-run-card[data-run-id="${CSS.escape(runId)}"]`);
+        if (card) {
+            const on = modalSelection.has(runId);
+            card.classList.toggle("selected", on);
+            card.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        updateModalChrome();
+    }
+
+    // Card click: toggle. Delete button: confirm + remove run.
+    $modalBody.addEventListener("click", (e) => {
+        const delBtn = e.target.closest("[data-action='delete']");
+        if (delBtn) {
+            e.stopPropagation();
+            const card = delBtn.closest(".sf-run-card");
+            if (!card) return;
+            const runId = card.dataset.runId;
+            const result = runs.get(runId);
+            const label = result ? fmtRunTimestamp(result.timestamp) : "this run";
+            if (!window.confirm(`Delete ${label}? This can't be undone.`)) return;
+            deleteRunPermanently(runId);
+            return;
+        }
+        const card = e.target.closest(".sf-run-card");
+        if (!card) return;
+        toggleSelection(card.dataset.runId);
+    });
+
+    // Keyboard on cards: Space/Enter to toggle, arrow keys to navigate.
+    $modalBody.addEventListener("keydown", (e) => {
+        const card = e.target.closest(".sf-run-card");
+        if (!card) return;
+        if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            toggleSelection(card.dataset.runId);
+            return;
+        }
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+            e.preventDefault();
+            const cards = Array.from($modalBody.querySelectorAll(".sf-run-card"));
+            const idx = cards.indexOf(card);
+            if (idx < 0) return;
+            // Figure out grid columns from layout so up/down jump rows
+            // correctly regardless of viewport width.
+            const cardsPerRow = (() => {
+                if (cards.length < 2) return 1;
+                const top0 = cards[0].offsetTop;
+                let n = 1;
+                while (n < cards.length && cards[n].offsetTop === top0) n++;
+                return n;
+            })();
+            let target = idx;
+            if (e.key === "ArrowRight") target = Math.min(cards.length - 1, idx + 1);
+            if (e.key === "ArrowLeft")  target = Math.max(0, idx - 1);
+            if (e.key === "ArrowDown")  target = Math.min(cards.length - 1, idx + cardsPerRow);
+            if (e.key === "ArrowUp")    target = Math.max(0, idx - cardsPerRow);
+            if (cards[target]) cards[target].focus();
+        }
+    });
+
+    $modalSelectAll.addEventListener("click", () => {
+        for (const id of runs.keys()) modalSelection.add(id);
+        for (const card of $modalBody.querySelectorAll(".sf-run-card")) {
+            card.classList.add("selected");
+            card.setAttribute("aria-pressed", "true");
+        }
+        updateModalChrome();
+    });
+    $modalClear.addEventListener("click", () => {
+        modalSelection.clear();
+        for (const card of $modalBody.querySelectorAll(".sf-run-card")) {
+            card.classList.remove("selected");
+            card.setAttribute("aria-pressed", "false");
+        }
+        updateModalChrome();
+    });
+
+    // Global opacity: live mutation on the active heatmaps + persist.
+    // Keeps the slider one of those rare "no Apply needed" controls —
+    // it's a compositor adjustment, the same logic as the right panel's
+    // layer opacity.
+    $modalOpacity.addEventListener("input", (e) => {
+        const pct = parseInt(e.target.value, 10);
+        $modalOpacityVal.textContent = `${pct}%`;
+        setGlobalOpacity(pct / 100);
+    });
+
+    $modalApply.addEventListener("click", applyModalSelection);
+    function applyModalSelection() {
+        if ($modalApply.disabled) return;
+        applyActiveIds(Array.from(modalSelection));
+        closeModal();
+    }
+
+
+    // ─── Hard delete (from the modal) ─────────────────────
+    function deleteRunPermanently(runId) {
+        // Pull from active set + storage + in-memory registry, then
+        // re-render the grid so the card disappears.
+        if (activeIds.has(runId)) {
+            deactivateRun(runId);
+            activeIds.delete(runId);
+            STORE.setActiveRunIds(Array.from(activeIds));
+        }
+        modalSelection.delete(runId);
+        runs.delete(runId);
+        STORE.deleteRun(runId);
+        renderModalBody();
+        updateModalChrome();
+        updateSidebarButton();
+    }
+
+
+    function fitToRun(result) {
+        const b = result.bbox;
+        const extent = new Extent({
+            xmin: b.west, ymin: b.south, xmax: b.east, ymax: b.north,
+            spatialReference: { wkid: 4326 },
+        });
+        view.goTo(extent.expand(1.2)).catch(() => {});
+    }
+
+
+    // ─── Cold-load: read storage + handle ?run=<id> ────────
+    //
+    // Persisted active set drives initial visibility — what the user
+    // had on the map last session comes back on refresh. The
+    // `?run=<id>` query param (from the analysis page's "View on map"
+    // CTA) is added to that set if not already, and the view zooms
+    // to its bbox.
+
+    function bootRunsPanel() {
+        const all = STORE.getAllRuns();
+        for (const result of all) runs.set(result.run_id, result);
+
+        const qs = new URLSearchParams(window.location.search);
+        const focusId = qs.get("run");
+
+        // Filter persisted active IDs against actually-existing runs in
+        // case storage drifted out of sync (e.g. a run got pruned from
+        // outside).
+        const persisted = STORE.getActiveRunIds().filter(id => runs.has(id));
+        const initialActive = new Set(persisted);
+        if (focusId && runs.has(focusId)) initialActive.add(focusId);
+
+        applyActiveIds(Array.from(initialActive));
+        updateSidebarButton();
+
+        if (focusId && runs.has(focusId)) {
+            view.when().then(() => fitToRun(runs.get(focusId))).catch(() => {});
+        }
+    }
+    bootRunsPanel();
 });

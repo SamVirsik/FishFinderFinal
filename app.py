@@ -32,6 +32,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template
 
 from src.LayerGeneration import UNKNOWN_SOURCE, fetch_tile_raster
+from src.basemap_sources import list_basemaps
 from src.data_sources import (
     DEFAULT_SOURCE_ID,
     all_visible_sources,
@@ -126,6 +127,14 @@ def index():
     return map_page()
 
 
+@app.route('/spotfinder')
+def spotfinder_page():
+    # Bounding box is carried via query params (n/s/e/w) — keeps the
+    # page bookmarkable and surviveable across reloads. The template
+    # parses + validates client-side; the server just renders the shell.
+    return render_template('spotfinder.html')
+
+
 @app.route('/sources')
 def list_sources():
     """Bathymetry-source registry, browser-facing subset.
@@ -142,6 +151,24 @@ def list_sources():
         "sources": [to_client_dict(s) for s in all_visible_sources()],
     }
     resp = jsonify(body)
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+@app.route('/basemaps')
+def list_basemaps_route():
+    """Basemap registry, browser-facing.
+
+    `templates/map.html` ships an empty `#basemap-grid` container; the
+    client populates it from this endpoint at boot. Same no-cache policy
+    as `/sources` — a hard reload should pick up registry edits.
+
+    Note: this response does NOT carry a `default` field. The client
+    pins its cold-load basemap with a hardcoded literal so the map can
+    render before any HTTP round-trip lands. Don't add one — see the
+    docstring in `src/basemap_sources.py`.
+    """
+    resp = jsonify({"basemaps": list_basemaps()})
     resp.headers['Cache-Control'] = 'no-store'
     return resp
 

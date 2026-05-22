@@ -929,6 +929,345 @@ input, select {
     display: none !important;
 }
 
+/* ─── Spotfinder ─────────────────────────────────────────── */
+/* Soft purple accent paired with the app's blue. Used for the FAB
+   gradient + glow, the rectangle stroke on the map, and the
+   eyebrow chip on the Spotfinder page. Defined as variables so
+   future Spotfinder UI can pull the same palette without re-stating
+   the hex.                                                          */
+:root {
+    --spotfinder-accent: #b388ff;
+    --spotfinder-accent-soft: rgba(179, 136, 255, 0.18);
+    --spotfinder-glow: rgba(179, 136, 255, 0.35);
+}
+
+.spotfinder-fab {
+    position: fixed;
+    left: 16px;
+    bottom: 28px;
+    z-index: 940;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px 10px 14px;
+    background: linear-gradient(135deg,
+        rgba(58, 163, 255, 0.22),
+        rgba(179, 136, 255, 0.22));
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow:
+        0 6px 20px rgba(0, 0, 0, 0.45),
+        0 0 18px var(--spotfinder-glow);
+    transition: transform 0.15s ease,
+                box-shadow 0.2s ease,
+                opacity 0.2s ease,
+                background 0.2s ease;
+}
+
+.spotfinder-fab:hover {
+    transform: translateY(-1px);
+    background: linear-gradient(135deg,
+        rgba(58, 163, 255, 0.30),
+        rgba(179, 136, 255, 0.32));
+    box-shadow:
+        0 8px 24px rgba(0, 0, 0, 0.55),
+        0 0 26px var(--spotfinder-glow);
+}
+
+.spotfinder-fab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.spotfinder-fab.hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+}
+
+.spotfinder-fab-icon {
+    color: var(--spotfinder-accent);
+    flex-shrink: 0;
+    filter: drop-shadow(0 0 6px var(--spotfinder-glow));
+}
+
+/* Eyebrow chip — appears above the panel heading and the page title.
+   Mirrors the FAB accent so the user sees the same visual signature. */
+.spotfinder-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px 3px 7px;
+    margin-bottom: 8px;
+    background: var(--spotfinder-accent-soft);
+    color: var(--spotfinder-accent);
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+.spotfinder-eyebrow svg {
+    flex-shrink: 0;
+}
+
+/* Spotfinder panel — same .panel chrome, anchored bottom-left so it
+   sits visually above the FAB rather than taking the full sidebar
+   height. Keep widths and rounding consistent with the right-hand
+   control panel.                                                    */
+.spotfinder-panel {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    width: 340px;
+    max-height: calc(100vh - var(--topbar-h) - 32px);
+    z-index: 945;
+    background: var(--bg-elev);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow:
+        var(--shadow),
+        0 0 32px var(--spotfinder-glow);
+    padding: 22px;
+    overflow-y: auto;
+    transform: translateY(0);
+    opacity: 1;
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 0.2s ease;
+}
+
+.spotfinder-panel.collapsed {
+    transform: translateY(calc(100% + 32px));
+    opacity: 0;
+    pointer-events: none;
+}
+
+.spotfinder-panel::-webkit-scrollbar {
+    width: 8px;
+}
+
+.spotfinder-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+}
+
+.spotfinder-panel .panel-header {
+    margin-bottom: 14px;
+}
+
+.spotfinder-bbox-readout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.bbox-cell {
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.bbox-cell-label {
+    display: block;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-bottom: 3px;
+    font-weight: 500;
+}
+
+.bbox-cell-value {
+    display: block;
+    font-size: 12.5px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    line-height: 1.35;
+}
+
+/* Status tag variants. Reuses .pending-tag layout but recolours per
+   drawing state — keeps the chip familiar but signals progress.    */
+#spotfinder-status-tag.drawing {
+    display: inline-block;
+    background: var(--spotfinder-accent-soft);
+    color: var(--spotfinder-accent);
+}
+
+#spotfinder-status-tag.defined {
+    display: inline-block;
+    background: rgba(85, 211, 130, 0.16);
+    color: #79e3a5;
+}
+
+#spotfinder-status-tag.undrawn {
+    display: inline-block;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-dim);
+}
+
+/* While the Spotfinder panel is active, the map cursor turns into
+   a crosshair to advertise the drag-to-draw interaction. Same
+   hook the measure tool uses (.workspace.measuring), kept separate
+   so the two modes never collide.                                   */
+.workspace.spotfinder-active #map,
+.workspace.spotfinder-active .esri-view-surface {
+    cursor: crosshair !important;
+}
+
+/* ─── Spotfinder page (/spotfinder) ──────────────────────── */
+.spotfinder-page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: calc(var(--topbar-h) + 36px) 32px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+.spotfinder-page-header {
+    margin-bottom: 4px;
+}
+
+.spotfinder-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 18px;
+    transition: color 0.15s ease;
+}
+
+.spotfinder-back:hover {
+    color: var(--text);
+}
+
+.spotfinder-title h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 30%, var(--spotfinder-accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.spotfinder-page-sub {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.spotfinder-card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    box-shadow: var(--shadow);
+}
+
+.spotfinder-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+
+.spotfinder-card-header h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.spotfinder-card-tag {
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(85, 211, 130, 0.16);
+    color: #79e3a5;
+}
+
+.spotfinder-card-tag.muted {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-faint);
+}
+
+.spotfinder-card-tag.ok {
+    background: rgba(85, 211, 130, 0.16);
+    color: #79e3a5;
+}
+
+.spotfinder-card .bbox-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.spotfinder-card-hint {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+
+.spotfinder-placeholder {
+    padding: 28px 18px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-sm);
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13px;
+    line-height: 1.5;
+    background:
+        repeating-linear-gradient(
+            -45deg,
+            rgba(255, 255, 255, 0.015) 0 8px,
+            transparent 8px 16px);
+}
+
+.spotfinder-placeholder p {
+    margin: 0;
+}
+
+.spotfinder-run-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 4px;
+}
+
+.spotfinder-run-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: auto;
+    min-width: 220px;
+}
+
+.spotfinder-run-btn svg {
+    flex-shrink: 0;
+}
+
 @media (max-width: 700px) {
     .panel {
         right: 8px;
@@ -950,5 +1289,727 @@ input, select {
         right: 8px;
         left: 8px;
         width: auto;
+    }
+
+    .spotfinder-panel {
+        right: 8px;
+        left: 8px;
+        width: auto;
+    }
+
+    .spotfinder-page {
+        padding: calc(var(--topbar-h) + 20px) 16px 40px;
+    }
+
+    .spotfinder-card .bbox-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* ─── Spotfinder analysis results ────────────────────────── */
+/* The results card has four mutually-exclusive panes driven by a
+   data-state attribute on the parent: empty / running / error /
+   ready. Toggling the attribute swaps which pane is visible without
+   any DOM manipulation. The Run button's pending pulse comes from
+   the existing .apply-btn.pending animation.                       */
+
+.sf-results-pane {
+    display: none;
+}
+.sf-results[data-state="empty"]   .sf-results-empty,
+.sf-results[data-state="running"] .sf-results-running,
+.sf-results[data-state="error"]   .sf-results-error,
+.sf-results[data-state="ready"]   .sf-results-ready {
+    display: block;
+}
+
+.sf-progress-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+}
+
+.sf-progress-label {
+    font-size: 12.5px;
+    color: var(--text);
+    font-weight: 500;
+}
+
+.sf-progress-pct {
+    font-size: 12.5px;
+    color: var(--spotfinder-accent);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.sf-progress-track {
+    width: 100%;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.sf-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg,
+        var(--spotfinder-accent),
+        var(--accent));
+    border-radius: 999px;
+    transition: width 0.12s linear;
+    box-shadow: 0 0 12px var(--spotfinder-glow);
+}
+
+.sf-error-box {
+    padding: 14px 16px;
+    border: 1px solid rgba(255, 77, 109, 0.4);
+    background: rgba(255, 77, 109, 0.08);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.sf-error-box strong {
+    display: block;
+    margin-bottom: 4px;
+    color: #ff8da0;
+}
+
+.sf-error-box p {
+    margin: 0 0 12px;
+    color: var(--text-dim);
+}
+
+.sf-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.sf-metric {
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.sf-metric-label {
+    display: block;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.sf-metric-value {
+    display: block;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+}
+
+.sf-top-spots {
+    margin-bottom: 18px;
+}
+
+.sf-top-spots-header {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-bottom: 6px;
+}
+
+.sf-top-spots-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.sf-top-spot {
+    display: grid;
+    grid-template-columns: 40px 1fr auto auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 9px 12px;
+    font-size: 12.5px;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.sf-top-spot:last-child {
+    border-bottom: none;
+}
+
+.sf-top-spot-rank {
+    color: var(--spotfinder-accent);
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.sf-top-spot-coord {
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+}
+
+.sf-top-spot-depth,
+.sf-top-spot-score {
+    color: var(--text-dim);
+    font-size: 12px;
+}
+
+.sf-top-spot-score {
+    color: var(--text);
+    font-weight: 600;
+    min-width: 36px;
+    text-align: right;
+}
+
+.sf-ready-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.sf-ready-actions .ghost-btn {
+    padding: 11px 16px;
+}
+
+.sf-view-btn {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-decoration: none;
+}
+
+.sf-view-btn svg {
+    flex-shrink: 0;
+}
+
+.spotfinder-run-btn.pending {
+    background: var(--spotfinder-accent);
+    color: #000;
+    animation: spotfinder-run-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes spotfinder-run-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--spotfinder-accent-soft); }
+    50%      { box-shadow: 0 0 0 8px transparent; }
+}
+
+
+/* ─── Spotfinder runs sidebar button ─────────────────────── */
+/* Single doorway to the fullscreen runs modal. Replaces the old
+   per-run cards in the sidebar — the modal is now the canonical
+   place to view and manage runs.                                    */
+
+.sf-runs-button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 14px;
+    background: rgba(179, 136, 255, 0.06);
+    border: 1px solid rgba(179, 136, 255, 0.22);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    text-align: left;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+}
+
+.sf-runs-button:hover {
+    background: rgba(179, 136, 255, 0.10);
+    border-color: rgba(179, 136, 255, 0.35);
+}
+
+.sf-runs-button:active {
+    transform: scale(0.995);
+}
+
+.sf-runs-button-text {
+    min-width: 0;
+    flex: 1;
+}
+
+.sf-runs-button-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.005em;
+}
+
+.sf-runs-button-sub {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.sf-runs-button-chevron {
+    flex-shrink: 0;
+    color: var(--spotfinder-accent);
+    opacity: 0.85;
+}
+
+
+/* ─── Spotfinder runs modal ──────────────────────────────── */
+/* Full-screen takeover that hosts the runs picker. Backdrop + card
+   are siblings inside .sf-runs-modal so the backdrop click can be
+   wired to close without bubbling through the card.                 */
+
+.sf-runs-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* fade controlled by .hidden — see below */
+    transition: opacity 0.18s ease;
+    opacity: 1;
+}
+
+.sf-runs-modal.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.sf-runs-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.sf-runs-modal-card {
+    position: relative;
+    z-index: 1;
+    width: 92%;
+    height: 88%;
+    max-width: 1400px;
+    background: var(--bg-elev-solid);
+    border: 1px solid var(--border-strong);
+    border-radius: 18px;
+    box-shadow:
+        0 24px 80px rgba(0, 0, 0, 0.65),
+        0 0 32px var(--spotfinder-glow);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: scale(1);
+    transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.sf-runs-modal.hidden .sf-runs-modal-card {
+    transform: scale(0.97);
+}
+
+.sf-runs-modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 22px 28px 0;
+}
+
+.sf-runs-modal-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.sf-runs-modal-titles h2 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+}
+
+.sf-runs-modal-counter {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    padding: 3px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 999px;
+}
+
+.sf-runs-modal-close {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 24px;
+    line-height: 1;
+    border-radius: 8px;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sf-runs-modal-close:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+}
+
+.sf-runs-modal-sub {
+    margin: 8px 28px 0;
+    font-size: 13px;
+    color: var(--text-dim);
+}
+
+.sf-runs-modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 28px 28px;
+}
+
+.sf-runs-modal-body::-webkit-scrollbar {
+    width: 10px;
+}
+
+.sf-runs-modal-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 5px;
+}
+
+
+/* ─── Card grid ─────────────────────────────────────────── */
+/* Responsive grid: targets ~3-4 cards per row on desktop, falls
+   back to fewer/single-column on narrow viewports. auto-fill +
+   minmax does the work — no media queries needed for the grid
+   itself.                                                          */
+.sf-runs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+}
+
+.sf-run-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.12s ease,
+                border-color 0.15s ease,
+                background 0.15s ease,
+                box-shadow 0.15s ease;
+}
+
+.sf-run-card:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+}
+
+.sf-run-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.sf-run-card.selected {
+    background: rgba(179, 136, 255, 0.08);
+    border-color: rgba(179, 136, 255, 0.55);
+    box-shadow: 0 0 0 1px rgba(179, 136, 255, 0.35) inset,
+                0 6px 22px rgba(179, 136, 255, 0.18);
+}
+
+.sf-run-card-thumb {
+    position: relative;
+    aspect-ratio: 280 / 180;
+    /* Checkerboard-ish dark surface so transparent areas of the
+       heatmap PNG read as map space rather than as a missing image. */
+    background:
+        linear-gradient(45deg, rgba(255, 255, 255, 0.025) 25%, transparent 25%) 0 0 / 16px 16px,
+        linear-gradient(-45deg, rgba(255, 255, 255, 0.025) 25%, transparent 25%) 0 0 / 16px 16px,
+        #15151a;
+    overflow: hidden;
+}
+
+.sf-run-card-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+/* Checkmark overlay shows on selected cards. Tucked into the top
+   right of the thumbnail so it never overlaps the metadata. */
+.sf-run-card-check {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: transparent;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sf-run-card.selected .sf-run-card-check {
+    background: var(--spotfinder-accent);
+    border-color: var(--spotfinder-accent);
+    color: #1c103a;
+    box-shadow: 0 0 0 4px rgba(179, 136, 255, 0.25);
+}
+
+.sf-run-card-delete {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 50%;
+    color: var(--text-dim);
+    font-size: 18px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.sf-run-card:hover .sf-run-card-delete,
+.sf-run-card:focus-within .sf-run-card-delete {
+    opacity: 1;
+}
+
+.sf-run-card-delete:hover {
+    background: rgba(255, 77, 109, 0.85);
+    color: #fff;
+    border-color: rgba(255, 77, 109, 1);
+}
+
+.sf-run-card-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sf-run-card-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.005em;
+}
+
+.sf-run-card-meta {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.sf-run-card-meta-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.sf-run-card-spots {
+    color: var(--spotfinder-accent);
+    font-weight: 600;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+
+/* ─── Empty state ───────────────────────────────────────── */
+.sf-runs-empty {
+    height: 100%;
+    min-height: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 14px;
+    color: var(--text-dim);
+    padding: 40px 24px;
+}
+
+.sf-runs-empty-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--spotfinder-accent-soft);
+    color: var(--spotfinder-accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sf-runs-empty-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+
+.sf-runs-empty-sub {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-dim);
+    max-width: 360px;
+    line-height: 1.5;
+}
+
+
+/* ─── Footer ────────────────────────────────────────────── */
+.sf-runs-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 24px;
+    background: rgba(0, 0, 0, 0.35);
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.sf-runs-modal-footer-left,
+.sf-runs-modal-footer-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.sf-runs-opacity-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    min-width: 200px;
+}
+
+.sf-runs-opacity-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.sf-runs-opacity-slider {
+    flex: 1;
+    margin: 0;
+}
+
+.sf-runs-opacity-val {
+    font-size: 12px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+    min-width: 36px;
+    text-align: right;
+}
+
+.sf-runs-apply {
+    width: auto;
+    min-width: 180px;
+}
+
+.sf-runs-apply[disabled] {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-faint);
+    cursor: not-allowed;
+}
+
+
+/* ─── Mobile responsiveness ─────────────────────────────── */
+@media (max-width: 700px) {
+    .sf-runs-modal-card {
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+    }
+
+    .sf-runs-modal-header,
+    .sf-runs-modal-sub {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+
+    .sf-runs-modal-sub {
+        margin-left: 16px;
+        margin-right: 16px;
+    }
+
+    .sf-runs-modal-body {
+        padding: 16px;
+    }
+
+    .sf-runs-grid {
+        grid-template-columns: 1fr;
+        gap: 14px;
+    }
+
+    .sf-runs-modal-footer {
+        padding: 12px 16px;
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .sf-runs-modal-footer-left,
+    .sf-runs-modal-footer-right {
+        justify-content: space-between;
+        width: 100%;
+    }
+
+    .sf-runs-opacity-wrap {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .sf-runs-apply {
+        min-width: 0;
+        flex: 1;
+    }
+}
+
+
+@media (max-width: 700px) {
+    .sf-metrics {
+        grid-template-columns: repeat(2, 1fr);
     }
 }
