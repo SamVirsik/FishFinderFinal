@@ -18,7 +18,7 @@ Each public analysis takes:
 
 All return a PIL.Image in 'RGBA'.
 
-The set is intentionally small (8 analyses), each visually and analytically
+The set is intentionally small (6 analyses), each visually and analytically
 distinct from the others.
 """
 
@@ -67,7 +67,6 @@ SLOPE_PALETTE = np.array([
 ], dtype=np.uint8)
 
 CONTOUR_COLOR = np.array([0, 0, 0, 255], dtype=np.uint8)
-SPOT_COLOR    = np.array([255, 30, 255, 255], dtype=np.uint8)
 
 
 # ---------------------------------------------------------------------------
@@ -153,18 +152,31 @@ def _grey_to_rgba(grey, alpha=255):
 # Analyses
 # ---------------------------------------------------------------------------
 
-def color_relief(elev_m, cellsize_m, param):
+def color_relief(elev_m, cellsize_m, param,
+                 min_depth_ft=0.0, max_depth_ft=140.0):
     """
     Best general-purpose view: depth-coloured terrain with a hillshade
     overlay. `param` = vertical exaggeration (1–50, default ~5).
+
+    `min_depth_ft` / `max_depth_ft` rescale the colour mapping so the
+    palette spans a user-chosen depth window. Depths shallower than
+    `min_depth_ft` clamp to the shallowest colour; depths deeper than
+    `max_depth_ft` clamp to the deepest. The defaults match the original
+    fixed-range behaviour (4 ft per band, saturating near ~140 ft).
     """
     exaggeration = max(1.0, float(param))
     hs = _hillshade(elev_m, cellsize_m, exaggeration=exaggeration)
 
     depth_ft = _depth_below_sea_ft(elev_m)
     land = _land_mask(elev_m)
-    # Use a fixed depth-step that's smooth enough to look continuous.
-    idx = _depth_band_index(depth_ft, 4.0, LAND_DEPTH_PALETTE.shape[0], land)
+
+    palette_len = LAND_DEPTH_PALETTE.shape[0]
+    usable = palette_len - 1   # water-depth slots (1..usable)
+    min_ft = float(min_depth_ft)
+    max_ft = max(min_ft + 1e-3, float(max_depth_ft))
+    t = np.clip((depth_ft - min_ft) / (max_ft - min_ft), 0.0, 1.0)
+    idx = 1 + np.minimum(usable - 1, (t * usable).astype(np.int32))
+    idx[land] = 0
     rgba = LAND_DEPTH_PALETTE[idx]
 
     ambient = 0.35
@@ -239,41 +251,6 @@ def slope(elev_m, cellsize_m, param):
     return Image.fromarray(rgba, mode='RGBA')
 
 
-def aspect(elev_m, cellsize_m, param):
-    """
-    Direction the sea floor faces (compass bearing of the down-slope vector),
-    coloured as an HSV wheel. Saturation/value drop on near-flat ground so
-    the eye isn't drawn to noise. `param` = minimum slope (deg) below which
-    a pixel reads as neutral grey.
-    """
-    min_slope_deg = max(0.5, float(param))
-    dzdx, dzdy = _slope_components(elev_m, cellsize_m)
-    slope_deg = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
-
-    # Aspect: compass bearing the down-slope direction faces (0=N, 90=E).
-    # In image arrays, rows increase southward, so the north component of
-    # the down-slope vector is +dzdy (since uphill-y = +dzdy and we want -uphill).
-    # The east component is -dzdx. Compass bearing = atan2(east, north).
-    asp = np.degrees(np.arctan2(-dzdx, dzdy))
-    asp = np.mod(asp, 360.0)
-    hue = (asp / 360.0).astype(np.float32)
-
-    # Saturation rises with slope; flat areas → grey.
-    sat = np.clip(slope_deg / (min_slope_deg * 4.0), 0.0, 1.0).astype(np.float32)
-    val = np.full_like(hue, 0.95, dtype=np.float32)
-
-    rgb = _hsv_to_rgb(hue, sat, val)
-    rgba = np.empty(rgb.shape[:-1] + (4,), dtype=np.uint8)
-    rgba[..., :3] = (rgb * 255).astype(np.uint8)
-    rgba[..., 3] = 255
-
-    # Below the threshold → fully transparent so the basemap shows through.
-    weak = slope_deg < min_slope_deg
-    rgba[weak, 3] = 0
-    rgba[_land_mask(elev_m), 3] = 0
-    return Image.fromarray(rgba, mode='RGBA')
-
-
 def roughness(elev_m, cellsize_m, param):
     """
     Local sea-floor roughness — the magnitude of elevation deviation from a
@@ -295,61 +272,6 @@ def roughness(elev_m, cellsize_m, param):
     return _grey_to_rgba(grey)
 
 
-# Per-band thresholds for slope steepness (deg) that flag a "fishy" pixel.
-# Shallower spots need less slope to be interesting; deep water needs more.
-_SPOT_DEPTH_BREAKS_FT = (0.0, 30.0, 80.0, 200.0, 600.0, np.inf)
-_SPOT_SLOPE_THRESH_DEG = (3.0, 5.0, 8.0, 12.0, 18.0)
-
-
-def fishing_spots(elev_m, cellsize_m, param):
-    """
-    Stepped depth heat-map with magenta highlights wherever the local slope
-    rises above a depth-aware threshold. Encodes the rule of thumb that
-    fish congregate where the bottom changes character: ledges, drop-offs,
-    pinnacles. `param` = depth band size in feet (for the underlying map).
-    """
-    band_ft = max(1.0, float(param))
-    depth_ft = _depth_below_sea_ft(elev_m)
-    land = _land_mask(elev_m)
-    slope_deg = _slope_degrees(elev_m, cellsize_m)
-
-    spot = np.zeros(elev_m.shape, dtype=bool)
-    for lo, hi, thresh in zip(_SPOT_DEPTH_BREAKS_FT[:-1],
-                              _SPOT_DEPTH_BREAKS_FT[1:],
-                              _SPOT_SLOPE_THRESH_DEG):
-        in_band = (depth_ft >= lo) & (depth_ft < hi)
-        spot |= in_band & (slope_deg >= thresh)
-
-    # Slight dilation so a single-pixel ridge becomes a visible mark.
-    spot = gaussian_filter(spot.astype(np.float32), sigma=1.0,
-                           mode='nearest') > 0.3
-
-    idx = _depth_band_index(depth_ft, band_ft, DEPTH_PALETTE.shape[0], land)
-    rgba = DEPTH_PALETTE[idx].copy()
-    rgba[spot] = SPOT_COLOR
-    return Image.fromarray(rgba, mode='RGBA')
-
-
-# ---------------------------------------------------------------------------
-# HSV → RGB (vectorised)
-# ---------------------------------------------------------------------------
-
-def _hsv_to_rgb(h, s, v):
-    """h,s,v in 0..1 ndarray of any shape. Returns float32 ndarray (...,3)."""
-    h = (h * 6.0).astype(np.float32)
-    i = np.floor(h).astype(np.int32) % 6
-    f = h - np.floor(h)
-
-    p = v * (1.0 - s)
-    q = v * (1.0 - s * f)
-    t = v * (1.0 - s * (1.0 - f))
-
-    r = np.choose(i, [v, q, p, p, t, v])
-    g = np.choose(i, [t, v, v, q, p, p])
-    b = np.choose(i, [p, p, t, v, v, q])
-    return np.stack([r, g, b], axis=-1)
-
-
 # ---------------------------------------------------------------------------
 # Public dispatch
 # ---------------------------------------------------------------------------
@@ -360,7 +282,5 @@ ANALYSES = {
     'depth-bands':    depth_bands,
     'hillshade':      hillshade,
     'slope':          slope,
-    'aspect':         aspect,
     'roughness':      roughness,
-    'fishing-spots':  fishing_spots,
 }

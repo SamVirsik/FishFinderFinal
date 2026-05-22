@@ -91,12 +91,6 @@
     ]);
     const SLOPE_PALETTE_LEN = SLOPE_PALETTE.length / 4;
 
-    // Per-band thresholds for the fishing-spot detector. Shallower spots
-    // need less slope to count as "fishy"; deep water needs more. Mirrors
-    // _SPOT_DEPTH_BREAKS_FT / _SPOT_SLOPE_THRESH_DEG in analyses.py.
-    const SPOT_DEPTH_BREAKS_FT = [0.0, 30.0, 80.0, 200.0, 600.0, Infinity];
-    const SPOT_SLOPE_THRESH_DEG = [3.0, 5.0, 8.0, 12.0, 18.0];
-
     // Viridis colour-map approximation (Kenneth Moreland polynomial fit).
     // Visually indistinguishable from matplotlib's viridis at PNG-compressed
     // tile sizes; saves embedding a 256-entry table.
@@ -263,23 +257,34 @@
     // Each analysis writes RGBA bytes into `out` (length 4*w*h). The caller
     // applies the nodata mask to the alpha channel afterwards.
 
-    function colorRelief(elev, nodata, w, h, cellsize, param, out) {
+    function colorRelief(elev, nodata, w, h, cellsize, param, out, paramExtra) {
         const exaggeration = Math.max(1.0, param);
         const hs = hillshade(elev, w, h, cellsize, exaggeration);
         const ambient = 0.35;
 
+        // Depth-range rescaling: slot 1 is the shallowest colour and slot
+        // (PALETTE_LEN - 1) is the deepest. Depths outside the user range
+        // clamp to those endpoints (matches the spec).
+        const usable = DEPTH_PALETTE_LEN - 1;          // 36 water-depth colours
+        const minFt = paramExtra && Number.isFinite(paramExtra.minDepthFt)
+            ? paramExtra.minDepthFt : 0.0;
+        const maxFt = paramExtra && Number.isFinite(paramExtra.maxDepthFt)
+            ? paramExtra.maxDepthFt : 140.0;
+        const rangeFt = Math.max(1e-3, maxFt - minFt);
+        const invRange = 1.0 / rangeFt;
+
         for (let i = 0; i < elev.length; i++) {
             const e = elev[i];
-            // Slot 0 = land (brown); slots 1..N = water depth bands of 4 ft.
+            // Slot 0 = land (brown); slots 1..usable = water depth bands.
             let slot;
             if (e >= 0) {
                 slot = 0;
             } else {
                 const depth_ft = -e * M_TO_FT;
-                slot = (depth_ft / 4.0) | 0;
-                slot = slot + 1;
-                if (slot < 1) slot = 1;
-                else if (slot > DEPTH_PALETTE_LEN - 1) slot = DEPTH_PALETTE_LEN - 1;
+                const t = (depth_ft - minFt) * invRange;
+                if (t <= 0) slot = 1;
+                else if (t >= 1) slot = usable;
+                else slot = 1 + Math.min(usable - 1, (t * usable) | 0);
             }
             const p = slot * 4;
             const lit = ambient + hs[i] * (1.0 - ambient);
@@ -312,8 +317,8 @@
         }
     }
 
-    // Compute the depth-band index grid (used by both depthBands and
-    // fishingSpots). Slot 0 reserved for land/transparent.
+    // Compute the depth-band index grid (used by depthBands). Slot 0
+    // reserved for land/transparent.
     function depthBandIndex(elev, w, h, band_ft) {
         const idx = _i32('idx', w * h);
         const inv_band = 1.0 / Math.max(band_ft, 1e-3);
@@ -387,47 +392,6 @@
         }
     }
 
-    function aspectAnalysis(elev, nodata, w, h, cellsize, param, out) {
-        const min_slope_deg = Math.max(0.5, param);
-        const { dzdx, dzdy } = gradient(elev, w, h, cellsize);
-        const radToDeg = 180 / Math.PI;
-        const sat_inv = 1.0 / (min_slope_deg * 4.0);
-        const val = 0.95;
-        for (let i = 0; i < elev.length; i++) {
-            const sx = dzdx[i];
-            const sy = dzdy[i];
-            const slope_deg = Math.atan(Math.hypot(sx, sy)) * radToDeg;
-            let asp = Math.atan2(-sx, sy) * radToDeg;
-            asp = ((asp % 360) + 360) % 360;
-            const hue = asp / 360.0;
-            let sat = slope_deg * sat_inv;
-            if (sat < 0) sat = 0; else if (sat > 1) sat = 1;
-
-            // HSV → RGB inlined.
-            const hh = hue * 6.0;
-            const ii = Math.floor(hh) % 6;
-            const f  = hh - Math.floor(hh);
-            const p_ = val * (1.0 - sat);
-            const q_ = val * (1.0 - sat * f);
-            const t_ = val * (1.0 - sat * (1.0 - f));
-            let r, g, b;
-            switch (ii) {
-                case 0: r = val; g = t_;  b = p_; break;
-                case 1: r = q_;  g = val; b = p_; break;
-                case 2: r = p_;  g = val; b = t_; break;
-                case 3: r = p_;  g = q_;  b = val; break;
-                case 4: r = t_;  g = p_;  b = val; break;
-                default: r = val; g = p_;  b = q_;
-            }
-            const di = i * 4;
-            out[di]     = (r * 255) | 0;
-            out[di + 1] = (g * 255) | 0;
-            out[di + 2] = (b * 255) | 0;
-            // Below threshold or on land → fully transparent.
-            out[di + 3] = (slope_deg < min_slope_deg || elev[i] >= 0) ? 0 : 255;
-        }
-    }
-
     function roughness(elev, nodata, w, h, cellsize, param, out) {
         const feature_scale_m = Math.max(2.0, param);
         const sigma_px = Math.max(0.5, feature_scale_m / cellsize);
@@ -444,45 +408,6 @@
         }
     }
 
-    function fishingSpots(elev, nodata, w, h, cellsize, param, out) {
-        const band_ft = Math.max(1.0, param);
-        const idx = depthBandIndex(elev, w, h, band_ft);
-        const slope_deg = slopeDegrees(elev, w, h, cellsize);
-
-        // depth-band-aware spot mask. Reused scratch — must explicitly write
-        // every cell (including land) since the buffer is no longer fresh.
-        const spot = _f32('spot', elev.length);
-        for (let i = 0; i < elev.length; i++) {
-            const e = elev[i];
-            if (e >= 0) { spot[i] = 0.0; continue; }
-            const dft = -e * M_TO_FT;
-            let thresh;
-            if (dft < SPOT_DEPTH_BREAKS_FT[1]) thresh = SPOT_SLOPE_THRESH_DEG[0];
-            else if (dft < SPOT_DEPTH_BREAKS_FT[2]) thresh = SPOT_SLOPE_THRESH_DEG[1];
-            else if (dft < SPOT_DEPTH_BREAKS_FT[3]) thresh = SPOT_SLOPE_THRESH_DEG[2];
-            else if (dft < SPOT_DEPTH_BREAKS_FT[4]) thresh = SPOT_SLOPE_THRESH_DEG[3];
-            else thresh = SPOT_SLOPE_THRESH_DEG[4];
-            spot[i] = slope_deg[i] >= thresh ? 1.0 : 0.0;
-        }
-        // Slight dilation so single-pixel ridges become visible marks
-        // (matches the gaussian_filter > 0.3 step in analyses.py).
-        const spotBlur = gaussianBlur(spot, w, h, 1.0);
-
-        for (let i = 0; i < elev.length; i++) {
-            const di = i * 4;
-            if (spotBlur[i] > 0.3) {
-                out[di] = 255; out[di+1] = 30; out[di+2] = 255; out[di+3] = 255;
-            } else {
-                const p = idx[i] * 4;
-                out[di]     = DEPTH_PALETTE[p];
-                out[di + 1] = DEPTH_PALETTE[p + 1];
-                out[di + 2] = DEPTH_PALETTE[p + 2];
-                out[di + 3] = DEPTH_PALETTE[p + 3];
-            }
-        }
-    }
-
-
     // ─── Public dispatch ────────────────────────────────────────────────
 
     self.FFAnalyses = {
@@ -491,8 +416,6 @@
         'depth-bands':   depthBands,
         'hillshade':     hillshadeOnly,
         'slope':         slopeAnalysis,
-        'aspect':        aspectAnalysis,
         'roughness':     roughness,
-        'fishing-spots': fishingSpots,
     };
 })();

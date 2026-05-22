@@ -2130,3 +2130,51 @@ input, select {
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+
+/* Depth-range section (visible only when Color Relief is the active
+   visualization — see map.js). Two range inputs are stacked on the same
+   track so they read as a single dual-handle slider; their thumbs sit
+   above a shared "rail" via negative margin + transparent track. */
+.depth-range-section.hidden {
+    display: none;
+}
+
+.depth-range-slider {
+    position: relative;
+    height: 28px;
+    margin-top: 4px;
+}
+
+.depth-range-slider .depth-range-input {
+    position: absolute;
+    inset: 0;
+    margin: 12px 0 0;
+    background: transparent;
+    pointer-events: none;
+}
+
+.depth-range-slider::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 12px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    pointer-events: none;
+}
+
+.depth-range-slider .depth-range-input::-webkit-slider-thumb {
+    pointer-events: auto;
+}
+.depth-range-slider .depth-range-input::-moz-range-thumb {
+    pointer-events: auto;
+}
+.depth-range-slider .depth-range-input::-webkit-slider-runnable-track {
+    background: transparent;
+}
+.depth-range-slider .depth-range-input::-moz-range-track {
+    background: transparent;
+}

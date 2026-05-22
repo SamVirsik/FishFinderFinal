@@ -153,6 +153,27 @@ const ANALYSES = {
         intro: "Coloured depth with overlaid hillshade. Default starting view.",
         pretty: "Color Relief",
     },
+    "hillshade": {
+        label: "Vertical exaggeration", unit: "×",
+        min: 1, max: 30, step: 1, default: 5,
+        hint: "Higher = more contrast between flat and steep ground.",
+        intro: "Pure greyscale shaded relief. Reveals structure without colour.",
+        pretty: "Hillshade",
+    },
+    "roughness": {
+        label: "Feature scale", unit: " m",
+        min: 5, max: 500, step: 5, default: 50,
+        hint: "Size of the features you want to highlight. Smaller = finer texture.",
+        intro: "High-pass detail. Bright = rough (wrecks, ledges, rubble).",
+        pretty: "Roughness",
+    },
+    "slope": {
+        label: "Max slope on scale", unit: "°",
+        min: 5, max: 90, step: 1, default: 30,
+        hint: "Smaller value exaggerates subtle slopes; larger smooths them.",
+        intro: "True slope angle. Cool = flat, hot = steep, purple = vertical.",
+        pretty: "Slope",
+    },
     "depth": {
         label: "Max depth shown", unit: " ft",
         min: 30, max: 3000, step: 10, default: 300,
@@ -167,41 +188,18 @@ const ANALYSES = {
         intro: "Stepped colour bands with crisp contour lines on every edge.",
         pretty: "Depth Bands",
     },
-    "hillshade": {
-        label: "Vertical exaggeration", unit: "×",
-        min: 1, max: 30, step: 1, default: 5,
-        hint: "Higher = more contrast between flat and steep ground.",
-        intro: "Pure greyscale shaded relief. Reveals structure without colour.",
-        pretty: "Hillshade",
-    },
-    "slope": {
-        label: "Max slope on scale", unit: "°",
-        min: 5, max: 90, step: 1, default: 30,
-        hint: "Smaller value exaggerates subtle slopes; larger smooths them.",
-        intro: "True slope angle. Cool = flat, hot = steep, purple = vertical.",
-        pretty: "Slope",
-    },
-    "aspect": {
-        label: "Min slope to colour", unit: "°",
-        min: 1, max: 20, step: 1, default: 2,
-        hint: "Flatter pixels stay transparent so noise doesn't dominate.",
-        intro: "Direction the sea floor faces. Hue = compass bearing of down-slope.",
-        pretty: "Aspect",
-    },
-    "roughness": {
-        label: "Feature scale", unit: " m",
-        min: 5, max: 500, step: 5, default: 50,
-        hint: "Size of the features you want to highlight. Smaller = finer texture.",
-        intro: "High-pass detail. Bright = rough (wrecks, ledges, rubble).",
-        pretty: "Roughness",
-    },
-    "fishing-spots": {
-        label: "Band size", unit: " ft",
-        min: 1, max: 50, step: 1, default: 10,
-        hint: "Underlying depth banding; magenta highlights are the spots.",
-        intro: "Magenta where slope is unusually high for that depth band.",
-        pretty: "Fishing Spots",
-    },
+};
+
+// Color Relief's depth-range control. Default range covers typical coastal
+// use; absolute bounds clamp to a sensible ceiling (1500 ft ≈ 460 m, which
+// is comfortably deeper than the Florida Straits but well shy of dem-global
+// abyssal depths).
+const COLOR_RELIEF_DEPTH_RANGE = {
+    minBound: 0,
+    maxBound: 1500,
+    step:     5,
+    defaultMin: 0,
+    defaultMax: 300,
 };
 
 
@@ -277,15 +275,29 @@ renderWorker = makeWorker();
 // if it gives up before the worker responds (timeout), so the late
 // response lands in onWorkerMessage's late-arrival branch and its bitmap
 // gets explicitly closed instead of pinning GPU memory until GC.
-function requestRender(url, analysisKey, param) {
+//
+// `paramExtra` carries analysis-specific structured parameters that don't
+// fit the single-scalar `param` (e.g. Color Relief's min/max depth). The
+// worker forwards it verbatim to the analysis function; for analyses that
+// don't use it the field is undefined and ignored.
+function requestRender(url, analysisKey, param, paramExtra) {
     const id = ++nextRequestId;
     const promise = new Promise((resolve) => {
         pending.set(id, { resolve });
         renderWorker.postMessage({
-            type: 'render', id, url, analysisKey, param,
+            type: 'render', id, url, analysisKey, param, paramExtra,
         });
     });
     return { promise, id };
+}
+
+// Encode paramExtra into the cache key. Same extras → same canvas; differing
+// extras → fresh render. Order of keys matters for stringify; we sort to
+// keep the encoding deterministic regardless of object construction order.
+function paramExtraKey(paramExtra) {
+    if (!paramExtra) return '';
+    const keys = Object.keys(paramExtra).sort();
+    return keys.map(k => `${k}=${paramExtra[k]}`).join(',');
 }
 
 function requestSample(url, fracX, fracY) {
@@ -365,12 +377,12 @@ const blankTileCanvas = (() => {
     return c;
 })();
 
-function renderToCanvas(url, analysisKey, param, key) {
+function renderToCanvas(url, analysisKey, param, paramExtra, key) {
     const work = (async () => {
         let result;
         let timer;
         const { promise: renderPromise, id: renderId } =
-            requestRender(url, analysisKey, param);
+            requestRender(url, analysisKey, param, paramExtra);
         try {
             result = await Promise.race([
                 renderPromise,
@@ -424,15 +436,16 @@ function renderToCanvas(url, analysisKey, param, key) {
 // completes in the background and lands in the LRU, ready for the next
 // request, but the fetchTile promise rejects immediately so ArcGIS can
 // redraw the mosaic without waiting on dead work.
-async function getRenderedCanvas(url, analysisKey, param, signal) {
+async function getRenderedCanvas(url, analysisKey, param, paramExtra, signal) {
     if (signal && signal.aborted) throw abortError();
-    const key = `${url}|${analysisKey}|${param}`;
+    const extraKey = paramExtraKey(paramExtra);
+    const key = `${url}|${analysisKey}|${param}|${extraKey}`;
     const hit = canvasCacheGet(key);
     if (hit) return hit;
 
     let work = inflightCanvas.get(key);
     if (!work) {
-        work = renderToCanvas(url, analysisKey, param, key);
+        work = renderToCanvas(url, analysisKey, param, paramExtra, key);
         inflightCanvas.set(key, work);
     }
 
@@ -501,6 +514,10 @@ require([
     const $pendingAnalysis = document.getElementById(`pending-analysis-${id}`);
     const $pendingSource   = document.getElementById(`pending-source-${id}`);
     const $pendingRes      = document.getElementById(`pending-resolution-${id}`);
+    const $depthRangeSection = document.getElementById(`depth-range-section-${id}`);
+    const $depthMin        = document.getElementById(`depth-min-${id}`);
+    const $depthMax        = document.getElementById(`depth-max-${id}`);
+    const $depthRangeValue = document.getElementById(`depth-range-value-${id}`);
     const $panel           = document.getElementById("control-panel");
     const $panelToggle     = document.getElementById("panel-toggle");
     const $panelClose      = document.getElementById("panel-close");
@@ -597,11 +614,57 @@ require([
             $param.value = cfg.default;
         }
         $paramValue.textContent = `${$param.value}${cfg.unit}`;
+
+        // Depth-range section visibility: only Color Relief uses it today.
+        // Hiding it for other analyses keeps the panel uncluttered AND
+        // avoids the user fiddling with a control that has no effect on
+        // the active analysis.
+        const showRange = $analysis.value === "color-relief";
+        if ($depthRangeSection) {
+            $depthRangeSection.classList.toggle("hidden", !showRange);
+        }
     }
 
     function updateParamLabel() {
         const cfg = ANALYSES[$analysis.value] || ANALYSES["color-relief"];
         $paramValue.textContent = `${$param.value}${cfg.unit}`;
+    }
+
+    // ─── Depth-range (Color Relief) ────────────────────────
+    // The two range inputs share a single visual track. We coerce them
+    // here so the min handle can never exceed the max handle (and vice
+    // versa), and refresh the readable "0–300 ft" label.
+    const MIN_DEPTH_SPAN_FT = 10;   // smallest range the user can squeeze to
+
+    function readDepthRange() {
+        let lo = parseInt($depthMin.value, 10);
+        let hi = parseInt($depthMax.value, 10);
+        if (!Number.isFinite(lo)) lo = COLOR_RELIEF_DEPTH_RANGE.defaultMin;
+        if (!Number.isFinite(hi)) hi = COLOR_RELIEF_DEPTH_RANGE.defaultMax;
+        if (hi - lo < MIN_DEPTH_SPAN_FT) hi = lo + MIN_DEPTH_SPAN_FT;
+        return { minDepthFt: lo, maxDepthFt: hi };
+    }
+
+    function syncDepthRangeUI() {
+        const { minDepthFt, maxDepthFt } = readDepthRange();
+        $depthMin.value = String(minDepthFt);
+        $depthMax.value = String(maxDepthFt);
+        $depthRangeValue.textContent = `${minDepthFt}–${maxDepthFt} ft`;
+    }
+
+    // Init bounds + defaults from the constant. The HTML carries sensible
+    // values too but we re-set them here so any future tweak to the
+    // constant is the single source of truth.
+    if ($depthMin && $depthMax) {
+        $depthMin.min  = String(COLOR_RELIEF_DEPTH_RANGE.minBound);
+        $depthMin.max  = String(COLOR_RELIEF_DEPTH_RANGE.maxBound);
+        $depthMin.step = String(COLOR_RELIEF_DEPTH_RANGE.step);
+        $depthMax.min  = String(COLOR_RELIEF_DEPTH_RANGE.minBound);
+        $depthMax.max  = String(COLOR_RELIEF_DEPTH_RANGE.maxBound);
+        $depthMax.step = String(COLOR_RELIEF_DEPTH_RANGE.step);
+        $depthMin.value = String(COLOR_RELIEF_DEPTH_RANGE.defaultMin);
+        $depthMax.value = String(COLOR_RELIEF_DEPTH_RANGE.defaultMax);
+        syncDepthRangeUI();
     }
 
 
@@ -620,12 +683,14 @@ require([
             resolution: null,
             analysisKey: null,
             param: null,
+            paramExtra: null,
         },
         fetchTile: function (level, row, col, options) {
             const url = `${baseurl}/raster/${this.source}/${this.resolution}`
                       + `/${level}/${col}/${row}.bin`;
             const signal = options && options.signal;
-            return getRenderedCanvas(url, this.analysisKey, this.param, signal);
+            return getRenderedCanvas(
+                url, this.analysisKey, this.param, this.paramExtra, signal);
         },
     });
 
@@ -659,12 +724,25 @@ require([
     // The diff between them drives the pending tags + Apply button state.
 
     function readDraft() {
+        const { minDepthFt, maxDepthFt } = readDepthRange();
         return {
             analysis:   $analysis.value,
             source:     $source.value,
             resolution: parseInt($resolution.value, 10),
             param:      Math.round(parseFloat($param.value)),
+            minDepthFt,
+            maxDepthFt,
         };
+    }
+
+    // Structured per-analysis extras passed to the worker. Only set for
+    // analyses that consume them — others get `null` so the cache key
+    // stays compact and there's no false-positive cache miss.
+    function paramExtraFor(cfg) {
+        if (cfg.analysis === "color-relief") {
+            return { minDepthFt: cfg.minDepthFt, maxDepthFt: cfg.maxDepthFt };
+        }
+        return null;
     }
 
     let committed = readDraft();
@@ -729,6 +807,7 @@ require([
             resolution:  cfg.resolution,
             analysisKey: cfg.analysis,
             param:       cfg.param,
+            paramExtra:  paramExtraFor(cfg),
         });
     }
 
@@ -839,7 +918,12 @@ require([
         // param, so the canvas cache entries it would produce don't
         // match what we're about to ask for.
         cancelPrefetch();
-        committed = { ...committed, param: draft.param };
+        committed = {
+            ...committed,
+            param: draft.param,
+            minDepthFt: draft.minDepthFt,
+            maxDepthFt: draft.maxDepthFt,
+        };
         applyConfig(committed, "overlap");
     }
 
@@ -848,6 +932,11 @@ require([
         $source.value     = committed.source;
         $resolution.value = committed.resolution;
         $param.value      = committed.param;
+        if ($depthMin && $depthMax) {
+            $depthMin.value = String(committed.minDepthFt);
+            $depthMax.value = String(committed.maxDepthFt);
+            syncDepthRangeUI();
+        }
         syncParamControl();
         $resValue.textContent = $resolution.value;
         draft = readDraft();
@@ -1033,14 +1122,16 @@ require([
         const plan = buildPrefetchPlan(view.extent, zoom, cfg.source);
 
         prefetchInFlight = true;
+        const extra = paramExtraFor(cfg);
+        const extraKey = paramExtraKey(extra);
         try {
             for (const t of plan) {
                 if (myToken !== prefetchToken) return;  // user moved, bail
                 const url = `${baseurl}/raster/${cfg.source}/${cfg.resolution}`
                           + `/${t.z}/${t.x}/${t.y}.bin`;
-                const key = `${url}|${cfg.analysis}|${cfg.param}`;
+                const key = `${url}|${cfg.analysis}|${cfg.param}|${extraKey}`;
                 if (canvasCache.has(key)) continue;     // already warm
-                try { await getRenderedCanvas(url, cfg.analysis, cfg.param); }
+                try { await getRenderedCanvas(url, cfg.analysis, cfg.param, extra); }
                 catch { /* keep the chain alive on individual failures */ }
             }
         } finally {
@@ -1133,6 +1224,73 @@ require([
         }
         syncControlState();
     });
+
+    // Depth-range inputs: same live-update semantics as the param slider.
+    // Same algorithm, same raster — only the colour mapping shifts — so
+    // an overlap swap is safe. The two handles are coupled to never
+    // cross, with a minimum 10 ft span so the colour ramp never collapses
+    // to a single hue.
+    function depthRangeChanged() {
+        return draft.minDepthFt !== committed.minDepthFt
+            || draft.maxDepthFt !== committed.maxDepthFt;
+    }
+    let liveDepthRangeScheduled = false;
+    function maybeLiveDepthRange() {
+        // Mirror maybeLiveParam: coalesce drag ticks to one render per
+        // animation frame, and skip if any major change is queued.
+        if (liveDepthRangeScheduled) return;
+        liveDepthRangeScheduled = true;
+        requestAnimationFrame(() => {
+            liveDepthRangeScheduled = false;
+            draft = readDraft();
+            // Reflect the coerced values back to the inputs so the user
+            // sees the clamp + min-span behaviour immediately.
+            syncDepthRangeUI();
+            if (isDirtyMajor()) { syncControlState(); return; }
+            if (!depthRangeChanged()) return;
+            liveParamUpdate();
+            syncControlState();
+        });
+    }
+    function onDepthInputInput(which) {
+        // While dragging, keep the two handles from crossing without
+        // forcing one to grab the other prematurely — instead pin the
+        // moving handle just on its side of the other.
+        let lo = parseInt($depthMin.value, 10);
+        let hi = parseInt($depthMax.value, 10);
+        if (!Number.isFinite(lo)) lo = COLOR_RELIEF_DEPTH_RANGE.defaultMin;
+        if (!Number.isFinite(hi)) hi = COLOR_RELIEF_DEPTH_RANGE.defaultMax;
+        if (which === "min" && lo > hi - MIN_DEPTH_SPAN_FT) {
+            lo = Math.max(COLOR_RELIEF_DEPTH_RANGE.minBound, hi - MIN_DEPTH_SPAN_FT);
+            $depthMin.value = String(lo);
+        }
+        if (which === "max" && hi < lo + MIN_DEPTH_SPAN_FT) {
+            hi = Math.min(COLOR_RELIEF_DEPTH_RANGE.maxBound, lo + MIN_DEPTH_SPAN_FT);
+            $depthMax.value = String(hi);
+        }
+        $depthRangeValue.textContent = `${lo}–${hi} ft`;
+        draft = readDraft();
+        if (isDirtyMajor()) {
+            syncControlState();
+            return;
+        }
+        maybeLiveDepthRange();
+    }
+    if ($depthMin && $depthMax) {
+        $depthMin.addEventListener("input",  () => onDepthInputInput("min"));
+        $depthMax.addEventListener("input",  () => onDepthInputInput("max"));
+        // Belt-and-braces on release in case a coalesced update was lost.
+        $depthMin.addEventListener("change", () => {
+            draft = readDraft();
+            if (!isDirtyMajor() && depthRangeChanged()) liveParamUpdate();
+            syncControlState();
+        });
+        $depthMax.addEventListener("change", () => {
+            draft = readDraft();
+            if (!isDirtyMajor() && depthRangeChanged()) liveParamUpdate();
+            syncControlState();
+        });
+    }
 
     // Opacity is a compositor property — mutate the live layer pair and
     // we're done. Zero recompute, zero rebuild.

@@ -3,9 +3,9 @@
 A geospatial visualization tool for **bathymetric data** (sea-floor depth) of
 the **Florida Keys**. The app pulls digital elevation rasters from public NOAA
 ImageServer endpoints and runs a small set of focused visualization algorithms
-over the depth grid (color relief, depth bands, hillshade, slope, aspect,
-roughness, fishing-spot finder) so the user can read sea-floor structure for
-navigation, fishing, or general exploration.
+over the depth grid (color relief, depth bands, hillshade, slope,
+roughness) so the user can read sea-floor structure for navigation,
+fishing, or general exploration.
 
 The viewer is a Flask web app that serves **raw float32 elevation grids** to a
 browser front-end built on the ArcGIS JS API. All colorisation happens in the
@@ -301,17 +301,19 @@ them visually aligned if you change either side.
 | key             | what it shows                                       | param meaning                  |
 | --------------- | --------------------------------------------------- | ------------------------------ |
 | `color-relief`  | depth coloring + hillshade overlay (default)        | vertical exaggeration (×)      |
+| `hillshade`     | pure greyscale shaded relief                        | vertical exaggeration (×)      |
+| `roughness`     | high-pass detail; bright = wrecks, ledges, rubble   | feature scale (m)              |
+| `slope`         | true slope angle (degrees)                          | max slope on color scale (deg) |
 | `depth`         | smooth viridis depth gradient                       | max depth shown (ft)           |
 | `depth-bands`   | discrete depth bands with black contour lines       | band size (ft)                 |
-| `hillshade`     | pure greyscale shaded relief                        | vertical exaggeration (×)      |
-| `slope`         | true slope angle (degrees)                          | max slope on color scale (deg) |
-| `aspect`        | direction down-slope faces (HSV wheel)              | min slope to color (deg)       |
-| `roughness`     | high-pass detail; bright = wrecks, ledges, rubble   | feature scale (m)              |
-| `fishing-spots` | depth bands + magenta where slope is high for depth | underlying band size (ft)      |
+
+`color-relief` also takes a `paramExtra = {minDepthFt, maxDepthFt}` that
+rescales the depth-to-colour mapping so deeper water doesn't all saturate to
+dark blue. Other analyses ignore `paramExtra`.
 
 Signatures:
-- JS: `(elev, nodataMask, w, h, cellsize_m, param, outRgba) → void`
-- Python: `(elev_m, cellsize_m, param) → PIL.Image`
+- JS: `(elev, nodataMask, w, h, cellsize_m, param, outRgba, paramExtra?) → void`
+- Python: `(elev_m, cellsize_m, param, **kwargs) → PIL.Image`
 
 `cellsize_m` is the **true** ground sample distance (Mercator-stretch
 corrected via centre latitude), so analyses can use real physical units —

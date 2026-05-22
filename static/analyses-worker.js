@@ -103,7 +103,7 @@ function ensureScratch(n) {
 
 // ─── Render dispatch ──────────────────────────────────────────────────
 
-async function handleRender(id, url, analysisKey, param) {
+async function handleRender(id, url, analysisKey, param, paramExtra) {
     let raster;
     try {
         raster = await fetchRaster(url);
@@ -167,7 +167,7 @@ async function handleRender(id, url, analysisKey, param) {
     }
 
     const fn = self.FFAnalyses[analysisKey] || self.FFAnalyses['color-relief'];
-    fn(scratchElev, scratchMask, w, h, cellsize, param, scratchRgba);
+    fn(scratchElev, scratchMask, w, h, cellsize, param, scratchRgba, paramExtra);
 
     for (let i = 0; i < n; i++) {
         if (scratchMask[i]) scratchRgba[i * 4 + 3] = 0;
@@ -235,7 +235,7 @@ self.addEventListener('message', (ev) => {
     const msg = ev.data;
     if (!msg) return;
     if (msg.type === 'render') {
-        handleRender(msg.id, msg.url, msg.analysisKey, msg.param)
+        handleRender(msg.id, msg.url, msg.analysisKey, msg.param, msg.paramExtra)
             .catch((err) => {
                 self.postMessage({
                     type: 'error', id: msg.id, message: String(err)
