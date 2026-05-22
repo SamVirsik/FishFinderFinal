@@ -1,23 +1,27 @@
 // Spotfinder analysis page controller.
 //
-// Reads the bbox the user drew on the map (carried via ?n=&s=&e=&w=),
-// drives the algorithm in window.FishFinderSpotfinder, persists the
-// result, and renders the four result-section states (empty / running
-// / error / ready). The map overlay rendering happens on the map page
-// after the user clicks "View on map" — see map.js.
+// Reads the search area the user drew on the map (carried in the URL —
+// either the new clat/clng/w_m/h_m/r form or the legacy n/s/e/w
+// bbox), drives the algorithm in window.FishFinderSpotfinder,
+// persists the result, and renders the four result-section states
+// (empty / running / error / ready). The map overlay rendering
+// happens on the map page after the user clicks "View on map" — see
+// map.js.
 //
 // The page state machine is driven by `setResultsState(state)`, which
 // flips a single `data-state` attribute on #sf-results; CSS shows the
 // matching .sf-results-* pane and hides the others.
 
 (() => {
-    // ─── Bounding box from query string ────────────────────
-    const $n      = document.getElementById("bbox-n");
-    const $s      = document.getElementById("bbox-s");
-    const $e      = document.getElementById("bbox-e");
-    const $w      = document.getElementById("bbox-w");
-    const $tag    = document.getElementById("bbox-status-tag");
-    const $hint   = document.getElementById("bbox-hint");
+    const SHAPE = window.FishFinderSpotfinderShape;
+
+    // ─── Search area readout ───────────────────────────────
+    const $center   = document.getElementById("area-center");
+    const $size     = document.getElementById("area-size");
+    const $rotation = document.getElementById("area-rotation");
+    const $areaKm2  = document.getElementById("area-size-km2");
+    const $tag      = document.getElementById("bbox-status-tag");
+    const $hint     = document.getElementById("bbox-hint");
 
     // ─── Run button + results section ──────────────────────
     const $run        = document.getElementById("spotfinder-run-btn");
@@ -28,6 +32,7 @@
     const $progressLabel = document.getElementById("sf-progress-label");
     const $progressPct   = document.getElementById("sf-progress-pct");
     const $progressFill  = document.getElementById("sf-progress-fill");
+    const $progressEta   = document.getElementById("sf-progress-eta");
 
     const $errorMsg = document.getElementById("sf-error-message");
     const $retry    = document.getElementById("sf-retry-btn");
@@ -42,33 +47,39 @@
     const $viewMap = document.getElementById("sf-view-btn");
 
 
-    // ─── Bbox parse + summary ──────────────────────────────
+    // ─── Parse URL into a SearchArea ───────────────────────
+    // SHAPE.decodeFromUrl honours both the new (clat/clng/w_m/h_m/r)
+    // and the legacy (n/s/e/w) shapes — old bookmarks survive.
     const params = new URLSearchParams(window.location.search);
-    const raw = {
-        n: parseFloat(params.get("n")),
-        s: parseFloat(params.get("s")),
-        e: parseFloat(params.get("e")),
-        w: parseFloat(params.get("w")),
-    };
-    const bboxValid =
-        Number.isFinite(raw.n) && Number.isFinite(raw.s) &&
-        Number.isFinite(raw.e) && Number.isFinite(raw.w) &&
-        raw.n >= -90 && raw.n <= 90 && raw.s >= -90 && raw.s <= 90 &&
-        raw.e >= -180 && raw.e <= 180 && raw.w >= -180 && raw.w <= 180 &&
-        raw.n > raw.s;
+    const searchArea = SHAPE.decodeFromUrl(params);
 
-    const bbox = bboxValid
-        ? { north: raw.n, south: raw.s, east: raw.e, west: raw.w }
-        : null;
+    function fmtLatLng(lat, lng) {
+        const ns = lat >= 0 ? "N" : "S";
+        const ew = lng >= 0 ? "E" : "W";
+        return `${Math.abs(lat).toFixed(4)}° ${ns}, `
+             + `${Math.abs(lng).toFixed(4)}° ${ew}`;
+    }
+    function fmtKm(m) {
+        // Show m for < 1 km, km otherwise. Tabular numbers in the
+        // style sheet keep the values aligned.
+        if (m < 1000) return `${m.toFixed(0)} m`;
+        return `${(m / 1000).toFixed(m < 10000 ? 2 : 1)} km`;
+    }
+    function fmtRotation(deg) {
+        // Wrap to (-180, 180] so a user-set 359° reads as -1° instead
+        // of "almost a full turn".
+        let d = ((deg + 180) % 360 + 360) % 360 - 180;
+        if (d === -180) d = 180;
+        if (Math.abs(d) < 0.5) return "0° — axis-aligned";
+        const dir = d > 0 ? "clockwise" : "counter-clockwise";
+        return `${Math.abs(d).toFixed(d < 1 ? 1 : 0)}° ${dir}`;
+    }
 
-    function fmtLat(v) { return `${v.toFixed(5)}° ${v >= 0 ? "N" : "S"}`; }
-    function fmtLon(v) { return `${v.toFixed(5)}° ${v >= 0 ? "E" : "W"}`; }
-
-    if (bbox) {
-        $n.textContent = fmtLat(bbox.north);
-        $s.textContent = fmtLat(bbox.south);
-        $e.textContent = fmtLon(bbox.east);
-        $w.textContent = fmtLon(bbox.west);
+    if (searchArea) {
+        $center.textContent   = fmtLatLng(searchArea.center.lat, searchArea.center.lng);
+        $size.textContent     = `${fmtKm(searchArea.width_m)} × ${fmtKm(searchArea.height_m)}`;
+        $rotation.textContent = fmtRotation(searchArea.rotation_deg);
+        $areaKm2.textContent  = `${SHAPE.areaKm2(searchArea).toFixed(2)} km²`;
         $tag.textContent = "Defined";
         $tag.classList.add("ok");
         $hint.textContent =
@@ -79,10 +90,10 @@
     } else {
         $tag.textContent = "No selection";
         $hint.textContent =
-            "No bounding box was supplied. Return to the map and draw an area before running Spotfinder.";
+            "No search area was supplied. Return to the map and draw an area before running Spotfinder.";
         $run.disabled = true;
         $run.setAttribute("aria-disabled", "true");
-        $run.title = "Draw a bounding box on the map first";
+        $run.title = "Draw a search area on the map first";
     }
 
 
@@ -118,7 +129,7 @@
     let inFlight   = false;
 
     function setRunButton(running) {
-        $run.disabled = running || !bbox;
+        $run.disabled = running || !searchArea;
         $rerun.disabled = running;
         if (running) {
             $run.classList.add("pending");
@@ -129,22 +140,46 @@
         }
     }
 
-    function onProgress(pct, label) {
+    function fmtRemaining(ms) {
+        // Smooth the noisy estimates the algorithm produces in its
+        // early ticks: cap at a sane max, round to whole seconds at the
+        // low end and whole minutes at the high end.
+        if (!Number.isFinite(ms) || ms <= 0) return "";
+        const s = Math.max(1, Math.round(ms / 1000));
+        if (s < 90) return `~${s}s remaining`;
+        const m = Math.floor(s / 60);
+        const rem = s % 60;
+        if (m < 10) return `~${m}m ${rem}s remaining`;
+        return `~${m}m remaining`;
+    }
+
+    function onProgress(pct, label, remainingMs) {
         const clamped = Math.max(0, Math.min(100, pct));
         $progressFill.style.width = `${clamped.toFixed(1)}%`;
         $progressPct.textContent  = `${Math.round(clamped)}%`;
         if (label) $progressLabel.textContent = label;
+        if ($progressEta) {
+            // Pct < 1 produces wildly unstable estimates (the elapsed-
+            // time-extrapolation formula divides by pct), so we hide
+            // the hint until the algorithm has actually started doing work.
+            // We also hide it as soon as we cross 99% — at that point
+            // "Done in a moment" is more honest than "~1s remaining".
+            const eta = (clamped >= 1 && clamped < 99)
+                      ? fmtRemaining(remainingMs)
+                      : "";
+            $progressEta.textContent = eta || "This will take a few seconds.";
+        }
     }
 
     async function run() {
-        if (!bbox || inFlight) return;
+        if (!searchArea || inFlight) return;
         inFlight = true;
         setRunButton(true);
         setResultsState("running");
         onProgress(0, "Starting…");
         try {
             const result = await window.FishFinderSpotfinder.run(
-                { bbox, params: {} },   // params reserved for the future tuning UI
+                { search_area: searchArea, params: {} },   // params reserved for the future tuning UI
                 onProgress,
             );
             // Persist before painting results so a refresh during the
@@ -179,16 +214,35 @@
 
         // Top spots — already sorted by score in the runner output.
         // Showing up to 5 keeps the page compact; users see the rest on
-        // the map after clicking through.
+        // the map after clicking through. Each entry surfaces the region
+        // class (pinnacle / ledge / …) and any NMS-suppressed sibling
+        // classes as small chips, so the reader can read what KIND of
+        // feature each spot is at a glance.
+        const esc = (s) => String(s).replace(/[&<>"']/g, c => (
+            { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+        ));
         const top = result.spots.slice(0, 5);
-        $topSpotsList.innerHTML = top.map((s, i) => `
+        $topSpotsList.innerHTML = top.map((s, i) => {
+            const cls = (s.features && s.features.class) || null;
+            const tags = (s.features && Array.isArray(s.features.secondary_tags))
+                       ? s.features.secondary_tags : [];
+            // Class + secondary tags ride INSIDE the coord cell so we
+            // don't have to redo the four-column grid in style.css. The
+            // chip flow is line-wrapping by default; on narrow viewports
+            // the second line just spans under the coordinates.
+            const classChip = cls
+                ? ` <span class="sf-top-spot-class">${esc(cls)}</span>` : "";
+            const tagChips = tags.length
+                ? ` <span class="sf-top-spot-tags">+ ${tags.map(esc).join(", ")}</span>`
+                : "";
+            return `
             <li class="sf-top-spot">
                 <span class="sf-top-spot-rank">#${i + 1}</span>
-                <span class="sf-top-spot-coord">${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}</span>
+                <span class="sf-top-spot-coord">${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}${classChip}${tagChips}</span>
                 <span class="sf-top-spot-depth">${s.depth_m.toFixed(0)} m</span>
                 <span class="sf-top-spot-score">${(s.score * 100).toFixed(0)}%</span>
-            </li>
-        `).join("");
+            </li>`;
+        }).join("");
 
         $viewMap.href = `/?run=${encodeURIComponent(result.run_id)}`;
     }

@@ -997,6 +997,78 @@ input, select {
     filter: drop-shadow(0 0 6px var(--spotfinder-glow));
 }
 
+/* Spotfinder overlay visibility toggle. Pill sibling of .spotfinder-fab,
+   anchored beside it in the bottom-left cluster. The Spotfinder FAB has
+   fixed-string content ("Spotfinder") so its width is stable — we can
+   offset this button by a hardcoded left value without it ever sliding
+   under the FAB. `[hidden]` keeps it out of the DOM flow until at least
+   one run is active. */
+.sf-overlay-toggle-fab {
+    position: fixed;
+    left: 160px;
+    bottom: 28px;
+    z-index: 940;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px 10px 14px;
+    background: rgba(20, 22, 32, 0.88);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform 120ms ease,
+                background 160ms ease,
+                box-shadow 160ms ease,
+                opacity 160ms ease;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.sf-overlay-toggle-fab:hover {
+    transform: translateY(-1px);
+    background: rgba(28, 32, 46, 0.95);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+}
+
+.sf-overlay-toggle-fab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ON state (overlay visible). Tinted accent so the user reads "active"
+   at a glance against the dimmer OFF appearance. */
+.sf-overlay-toggle-fab:not(.overlay-off) {
+    background: linear-gradient(135deg,
+        rgba(58, 163, 255, 0.22),
+        rgba(179, 136, 255, 0.22));
+}
+.sf-overlay-toggle-fab:not(.overlay-off):hover {
+    background: linear-gradient(135deg,
+        rgba(58, 163, 255, 0.30),
+        rgba(179, 136, 255, 0.32));
+}
+
+.sf-overlay-toggle-fab[hidden] {
+    display: none;
+}
+
+.sf-overlay-toggle-icon {
+    color: var(--spotfinder-accent);
+    flex-shrink: 0;
+}
+
+/* Eye glyph swap: ON shows the open-eye paths, OFF shows the crossed-eye
+   paths. Default state is ON; .overlay-off flips both halves. */
+.sf-overlay-toggle-fab .sf-eye-off { display: none; }
+.sf-overlay-toggle-fab.overlay-off .sf-eye-on  { display: none; }
+.sf-overlay-toggle-fab.overlay-off .sf-eye-off { display: inline; }
+.sf-overlay-toggle-fab.overlay-off .sf-overlay-toggle-icon {
+    color: var(--text-dim);
+}
+
 /* Eyebrow chip — appears above the panel heading and the page title.
    Mirrors the FAB accent so the user sees the same visual signature. */
 .spotfinder-eyebrow {
@@ -1120,10 +1192,32 @@ input, select {
 /* While the Spotfinder panel is active, the map cursor turns into
    a crosshair to advertise the drag-to-draw interaction. Same
    hook the measure tool uses (.workspace.measuring), kept separate
-   so the two modes never collide.                                   */
+   so the two modes never collide. Once a rectangle exists the map.js
+   pointer-move handler toggles the more-specific .sf-cursor-* classes
+   (move / resize / rotate) when hovering over the body or handles —
+   those override the crosshair default below. The general selector
+   wins via !important on the default; the specific selectors then
+   override that with their own !important.                            */
 .workspace.spotfinder-active #map,
 .workspace.spotfinder-active .esri-view-surface {
     cursor: crosshair !important;
+}
+.workspace.sf-cursor-move #map,
+.workspace.sf-cursor-move .esri-view-surface {
+    cursor: move !important;
+}
+.workspace.sf-cursor-resize #map,
+.workspace.sf-cursor-resize .esri-view-surface {
+    /* Bidirectional resize cursor — works for any rotation since the
+       rectangle's handles aren't axis-aligned in general. */
+    cursor: nwse-resize !important;
+}
+.workspace.sf-cursor-rotate #map,
+.workspace.sf-cursor-rotate .esri-view-surface {
+    /* No standard "rotate" cursor — `grab` is the closest universal
+       fallback, and matches the visual convention of "grab the handle
+       to rotate". */
+    cursor: grab !important;
 }
 
 /* ─── Spotfinder page (/spotfinder) ──────────────────────── */
@@ -1463,6 +1557,29 @@ input, select {
     color: var(--text);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
+}
+
+.sf-top-spot-class {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 6px;
+    background: rgba(179, 136, 255, 0.18);
+    color: var(--spotfinder-accent, #c9b3ff);
+    font-family: var(--font-sans, sans-serif);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    vertical-align: 1px;
+}
+
+.sf-top-spot-tags {
+    margin-left: 4px;
+    color: var(--text-dim);
+    font-family: var(--font-sans, sans-serif);
+    font-size: 10.5px;
+    font-weight: 500;
 }
 
 .sf-top-spot-depth,

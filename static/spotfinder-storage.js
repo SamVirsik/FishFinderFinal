@@ -27,11 +27,56 @@
             const raw = localStorage.getItem(KEY);
             if (!raw) return [];
             const arr = JSON.parse(raw);
-            return Array.isArray(arr) ? arr : [];
+            if (!Array.isArray(arr)) return [];
+            return arr.map(_migrateRun).filter(Boolean);
         } catch (err) {
             console.warn("[spotfinder-storage] failed to read runs:", err);
             return [];
         }
+    }
+
+    /**
+     * One-way migration applied on every read. Pre-rotation-rework runs
+     * only have an axis-aligned `bbox` + `heatmap_bounds`. We
+     * synthesise a SearchArea (rotation = 0, corners from the bbox)
+     * and a matching `heatmap_corners` so the rotated overlay code
+     * path doesn't need to special-case old data — callers can always
+     * rely on `search_area.corners` and `heatmap_corners` being there.
+     *
+     * Done at read time (not migrated and re-saved) so we never
+     * silently mutate the user's localStorage without an explicit
+     * write op. saveRun() naturally re-saves in the new shape the
+     * next time the user runs anything on that area.
+     */
+    function _migrateRun(run) {
+        if (!run || !run.run_id) return null;
+        const SHAPE = window.FishFinderSpotfinderShape;
+        if (!run.search_area) {
+            // Old shape: pre-rotation. bbox is the AABB which equals
+            // the corners at rotation 0.
+            const area = SHAPE && SHAPE.coerceSearchArea(run.bbox);
+            if (area) {
+                run.search_area = area;
+                run.bbox = { ...area.bbox };
+            }
+        } else if (SHAPE) {
+            // Already new shape, but bbox could be missing if a
+            // version of the code wrote search_area without the
+            // backwards-compat mirror.
+            run.search_area = SHAPE.coerceSearchArea(run.search_area);
+            if (run.search_area && !run.bbox) {
+                run.bbox = { ...run.search_area.bbox };
+            }
+        }
+        if (!run.heatmap_corners && run.search_area) {
+            run.heatmap_corners = run.search_area.corners.map(
+                (c) => ({ lat: c.lat, lng: c.lng })
+            );
+        }
+        if (!run.heatmap_bounds && run.search_area) {
+            run.heatmap_bounds = { ...run.search_area.bbox };
+        }
+        return run;
     }
 
     function _saveAll(arr) {

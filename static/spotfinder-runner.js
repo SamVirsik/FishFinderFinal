@@ -1,53 +1,78 @@
 // ============================================================
-// SPOTFINDER ALGORITHM — STUB IMPLEMENTATION
+// SPOTFINDER ALGORITHM — REAL IMPLEMENTATION
 // ============================================================
 //
 // This file is the single swap-out point for the Spotfinder algorithm.
 // Everything outside this file (the analysis page, the map overlay
 // layers, the persistence layer, the runs panel) consumes the contract
 // declared at the top of this file and must continue to work unchanged
-// when the real algorithm replaces the stub.
+// when the runner changes.
 //
 // CONTRACT (do not change without updating callers):
 //   window.FishFinderSpotfinder.run(input, onProgress?) → Promise<SpotfinderResult>
 //
+// The runner is a thin streaming client. The actual algorithm runs on
+// the Python backend at POST /spotfinder/run — see src/spotfinder.py.
+// The backend was chosen over an all-JS implementation because:
+//
+//   - The heavy math (BPI annulus means, percentile-rank over millions
+//     of cells, peak detection) is 10-100× faster in numpy + scipy
+//     than in pure JS, and scipy.ndimage.uniform_filter in particular
+//     runs the BPI kernels in O(N) regardless of radius.
+//   - The existing tile pipeline already disk-caches NOAA bytes and
+//     manages an HTTPS session, so the Spotfinder fetch path piggybacks
+//     on infrastructure that's already known-good.
+//   - Algorithm changes ship as one server file with no asset rebuilds
+//     and no risk of an outdated cached worker on a user's browser.
+//
+// The wire format is newline-delimited JSON (NDJSON) over a single
+// long-lived POST response. One JSON event per line; the last event is
+// either `result` or `error`. This keeps the runner trivial — no SSE
+// wire-format parsing, no separate kickoff/poll endpoints.
+//
 // If you find yourself wanting to leak algorithm-specific concepts out
-// of this file (a new field on the bbox, a new top-level property on
-// the result, a UI mode that only makes sense for one analysis kind),
-// stop and hide it behind `manifest` or each spot's `features` map
-// instead — those are the documented extension points.
+// of this file (a new field on the search area, a new top-level
+// property on the result, a UI mode that only makes sense for one
+// analysis kind), stop and hide it behind `manifest` or each spot's
+// `features` map instead — those are the documented extension points.
 // ============================================================
 
 
-// ─── Type contract (JSDoc — express the spec's TS types) ──────
+// ─── Type contract (JSDoc — mirrors the spec's TS types) ──────
+
+/**
+ * @typedef {Object} LatLng
+ * @property {number} lat
+ * @property {number} lng
+ */
 
 /**
  * @typedef {Object} BoundingBox
- * @property {number} north   Latitude of the top edge, in decimal degrees.
- * @property {number} south   Latitude of the bottom edge.
- * @property {number} east    Longitude of the right edge.
- * @property {number} west    Longitude of the left edge.
+ * @property {number} north
+ * @property {number} south
+ * @property {number} east
+ * @property {number} west
  */
 
 /**
- * Free-form algorithm parameters. Kept opaque on purpose — adding a
- * UI knob shouldn't require changing this contract. Persist whatever
- * the algorithm needs to reproduce the run.
- *
- * @typedef {Object.<string, unknown>} SpotfinderParams
+ * @typedef {Object} SearchArea
+ * @property {[LatLng, LatLng, LatLng, LatLng]} corners   TL, TR, BR, BL.
+ * @property {LatLng}      center
+ * @property {number}      width_m
+ * @property {number}      height_m
+ * @property {number}      rotation_deg
+ * @property {BoundingBox} bbox
  */
+
+/** @typedef {Object.<string, unknown>} SpotfinderParams */
 
 /**
  * @typedef {Object} SpotfinderInput
- * @property {BoundingBox}      bbox
+ * @property {SearchArea}       search_area
  * @property {SpotfinderParams} params
  */
 
 /**
- * One identified spot. `features` is the per-spot extension map — any
- * algorithm-specific scalar (BPI, slope, rugosity, predator likelihood,
- * etc.) lives here so the UI doesn't grow a special-case column for it.
- *
  * @typedef {Object} Spot
  * @property {string} id
  * @property {number} lat
@@ -59,267 +84,149 @@
 
 /**
  * @typedef {Object} SpotfinderManifest
- * @property {string} data_source                 Human label for the source raster.
- * @property {number} resolution_m                Ground sample distance, metres.
- * @property {number} cell_count                  Number of grid cells analysed.
- * @property {number} runtime_ms                  Wall-clock time spent in the algorithm.
+ * @property {string} data_source
+ * @property {number} resolution_m
+ * @property {number} cell_count
+ * @property {number} runtime_ms
+ * @property {number} rotation_deg
  */
 
 /**
  * @typedef {Object} SpotfinderResult
- * @property {string}            run_id           Caller-opaque unique id.
- * @property {string}            timestamp        ISO 8601, when the run completed.
- * @property {BoundingBox}       bbox
+ * @property {string}            run_id
+ * @property {string}            timestamp
+ * @property {SearchArea}        search_area
  * @property {SpotfinderParams}  params
- * @property {string}            heatmap_png_url  data: or blob: URL of the colorised score raster (with alpha).
- * @property {BoundingBox}       heatmap_bounds   Geographic corners the heatmap PNG is georeferenced to.
+ * @property {string}            heatmap_png_url
+ * @property {[LatLng, LatLng, LatLng, LatLng]} heatmap_corners
  * @property {Spot[]}            spots
  * @property {SpotfinderManifest} manifest
+ * @property {BoundingBox}       bbox
+ * @property {BoundingBox}       heatmap_bounds
  */
 
 /**
- * Progress callback — invoked with monotonically non-decreasing `pct`
- * in [0, 100] and a short human label of the current stage. Safe to
- * ignore.
+ * Progress callback. `remaining_ms` is provided once enough work has
+ * elapsed for the estimate to be stable (`pct > ~1`); it's `undefined`
+ * before that.
  *
  * @callback ProgressFn
- * @param   {number} pct
- * @param   {string} label
- * @returns {void}
+ * @param   {number}            pct          0..100.
+ * @param   {string}            label        Short human-readable stage.
+ * @param   {number|undefined}  remaining_ms Estimated millis until done.
  */
 
 /**
  * Run the Spotfinder algorithm.
  *
- * @param {SpotfinderInput}    input
+ * @param {SpotfinderInput} input
  * @param {ProgressFn} [onProgress]
  * @returns {Promise<SpotfinderResult>}
  */
 async function runSpotfinder(input, onProgress) {
-    const t0 = performance.now();
-    const report = typeof onProgress === "function"
-        ? onProgress
-        : () => {};
+    const SHAPE = window.FishFinderSpotfinderShape;
+    const report = typeof onProgress === "function" ? onProgress : () => {};
 
-    // STUB: stages exist purely to surface meaningful progress; the
-    // real algorithm will replace this with the actual fetch / compute
-    // / detect work and tick `report` from there.
-    const stages = [
-        { label: "Fetching bathymetry…",  duration: _rand(300, 600),  endPct: 25 },
-        { label: "Computing features…",    duration: _rand(700, 1200), endPct: 60 },
-        { label: "Detecting spots…",       duration: _rand(600, 1000), endPct: 85 },
-        { label: "Generating heatmap…",    duration: _rand(400, 700),  endPct: 100 },
-    ];
-    let cursor = 0;
-    for (const stage of stages) {
-        await _tween(cursor, stage.endPct, stage.duration,
-                     (p) => report(p, stage.label));
-        cursor = stage.endPct;
-    }
-    // Heatmap + spot generation runs synchronously after the staged
-    // "compute" tick — visually the progress bar reaches 100% just
-    // before the result is handed back, which matches real behaviour.
-    const { heatmapUrl, spots, cellCount, resolutionM } =
-        _generateStubField(input.bbox);
+    // Tolerate callers that still pass `bbox`. SHAPE.coerceSearchArea
+    // accepts either a SearchArea or a BoundingBox.
+    const area = SHAPE.coerceSearchArea(input.search_area || input.bbox);
+    if (!area) throw new Error("runSpotfinder: invalid search_area");
 
-    return {
-        run_id:    _genId(),
-        timestamp: new Date().toISOString(),
-        bbox:      { ...input.bbox },
-        params:    { ...(input.params || {}) },
-        heatmap_png_url: heatmapUrl,
-        heatmap_bounds:  { ...input.bbox },
-        spots,
-        manifest: {
-            data_source:  "stub",
-            resolution_m: resolutionM,
-            cell_count:   cellCount,
-            runtime_ms:   Math.round(performance.now() - t0),
-        },
-    };
-}
-
-
-// ============================================================
-// EVERYTHING BELOW THIS LINE IS STUB-ONLY.
-//
-// When the real algorithm lands it will compute a true score raster
-// from bathymetry and produce its own heatmap PNG. The helpers below
-// (_generateStubField, _colorRamp, _tween, _rand, _randInt, _genId)
-// can be deleted wholesale at that point — they are not part of the
-// public contract.
-// ============================================================
-
-/**
- * Build a plausible-looking score field from random gaussian blobs,
- * colorise it with a transparent → yellow → orange → red ramp, encode
- * it as a PNG data URL, and pick a handful of "spots" near the bright
- * peaks. Output canvas is ~512 px on the long side, aspect-matched to
- * the bbox so map overlay rendering doesn't distort it.
- */
-function _generateStubField(bbox) {
-    // Match canvas aspect to bbox aspect so the MediaLayer overlay
-    // renders 1:1 with no implicit stretching.
-    const dLon = Math.max(1e-6, bbox.east  - bbox.west);
-    const dLat = Math.max(1e-6, bbox.north - bbox.south);
-    const aspect = dLon / dLat;
-    const longSide = 512;
-    let w, h;
-    if (aspect >= 1) { w = longSide; h = Math.max(64, Math.round(longSide / aspect)); }
-    else             { h = longSide; w = Math.max(64, Math.round(longSide * aspect)); }
-
-    // Place blobs in pixel space. Sigma is a fraction of the short
-    // side so blob radius scales with canvas size rather than always
-    // being ~30 px.
-    const shortSide = Math.min(w, h);
-    const blobCount = _randInt(6, 12);
-    const blobs = [];
-    for (let i = 0; i < blobCount; i++) {
-        blobs.push({
-            x:     Math.random() * w,
-            y:     Math.random() * h,
-            sigma: _rand(0.06, 0.18) * shortSide,
-            amp:   _rand(0.5, 1.0),
-        });
-    }
-
-    // Sum-of-gaussians field. Cheap and visually convincing at this
-    // resolution — Perlin noise would be nicer but isn't worth the
-    // dependency for stub output.
-    const field = new Float32Array(w * h);
-    let fieldMax = 0;
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            let v = 0;
-            for (const b of blobs) {
-                const dx = x - b.x;
-                const dy = y - b.y;
-                const d2 = dx * dx + dy * dy;
-                v += b.amp * Math.exp(-d2 / (2 * b.sigma * b.sigma));
-            }
-            field[y * w + x] = v;
-            if (v > fieldMax) fieldMax = v;
-        }
-    }
-    if (fieldMax > 0) {
-        for (let i = 0; i < field.length; i++) field[i] /= fieldMax;
-    }
-
-    // Rasterize.
-    const canvas = document.createElement("canvas");
-    canvas.width  = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    const img = ctx.createImageData(w, h);
-    for (let i = 0; i < field.length; i++) {
-        const [r, g, b, a] = _colorRamp(field[i]);
-        img.data[i * 4    ] = r;
-        img.data[i * 4 + 1] = g;
-        img.data[i * 4 + 2] = b;
-        img.data[i * 4 + 3] = a;
-    }
-    ctx.putImageData(img, 0, 0);
-    // PNG keeps the alpha channel so the overlay genuinely blends
-    // with the basemap instead of showing a black rectangle around
-    // the low-intensity edges.
-    const heatmapUrl = canvas.toDataURL("image/png");
-
-    // Spots: top-N blob centres by amplitude, slightly jittered so they
-    // don't sit on the exact peak pixel. Convert pixel coords to lat/lon
-    // using the bbox (y=0 at top → north).
-    const sortedBlobs = blobs.slice().sort((a, b) => b.amp - a.amp);
-    const spotCount = Math.min(sortedBlobs.length, _randInt(5, 12));
-    const spots = [];
-    for (let i = 0; i < spotCount; i++) {
-        const b = sortedBlobs[i];
-        const jitterPx = b.sigma * 0.3;
-        const sx = b.x + _rand(-jitterPx, jitterPx);
-        const sy = b.y + _rand(-jitterPx, jitterPx);
-        const px = Math.max(0, Math.min(w - 1, Math.round(sx)));
-        const py = Math.max(0, Math.min(h - 1, Math.round(sy)));
-        const fieldValue = field[py * w + px];
-        const lon = bbox.west  + (sx / w) * dLon;
-        const lat = bbox.north - (sy / h) * dLat;
-        spots.push({
-            id:      _genId(),
-            lat,
-            lng:     lon,
-            depth_m: _rand(10, 80),
-            score:   Math.max(0.1, Math.min(1.0, fieldValue)),
-            features: {
-                bpi:      _rand(0.2, 0.95),
-                slope:    _rand(0.1, 0.8),
-                rugosity: _rand(0.1, 0.9),
-            },
-        });
-    }
-    spots.sort((a, b) => b.score - a.score);
-
-    return {
-        heatmapUrl,
-        spots,
-        cellCount:   w * h,
-        resolutionM: _randInt(5, 15),
-    };
-}
-
-/**
- * Transparent → yellow → orange → red, with alpha rising alongside
- * intensity so low-score areas fade out smoothly instead of showing
- * a hard edge.
- */
-function _colorRamp(t) {
-    if (t <= 0.05) return [0, 0, 0, 0];
-    const stops = [
-        { t: 0.05, r: 255, g: 255, b: 180, a: 0   },
-        { t: 0.30, r: 255, g: 230, b: 110, a: 110 },
-        { t: 0.60, r: 255, g: 170, b:  50, a: 200 },
-        { t: 1.00, r: 255, g:  70, b:  60, a: 235 },
-    ];
-    for (let i = 1; i < stops.length; i++) {
-        if (t <= stops[i].t) {
-            const a = stops[i - 1];
-            const b = stops[i];
-            const f = (t - a.t) / (b.t - a.t);
-            return [
-                Math.round(a.r + (b.r - a.r) * f),
-                Math.round(a.g + (b.g - a.g) * f),
-                Math.round(a.b + (b.b - a.b) * f),
-                Math.round(a.a + (b.a - a.a) * f),
-            ];
-        }
-    }
-    const last = stops[stops.length - 1];
-    return [last.r, last.g, last.b, last.a];
-}
-
-/** rAF-driven linear interpolation from `fromPct` to `toPct` over
- *  `durationMs`, calling `cb(pct)` each frame. */
-function _tween(fromPct, toPct, durationMs, cb) {
-    return new Promise((resolve) => {
-        const start = performance.now();
-        function step(now) {
-            const t = Math.min(1, (now - start) / durationMs);
-            cb(fromPct + (toPct - fromPct) * t);
-            if (t < 1) requestAnimationFrame(step);
-            else       resolve();
-        }
-        requestAnimationFrame(step);
+    const body = JSON.stringify({
+        search_area: area,
+        params:      input.params || {},
     });
-}
 
-function _rand(lo, hi)     { return lo + Math.random() * (hi - lo); }
-function _randInt(lo, hi)  { return Math.floor(_rand(lo, hi + 1)); }
-function _genId() {
-    // crypto.randomUUID is available everywhere we care about (Chrome 92+,
-    // Firefox 95+, Safari 15.4+). Fall back to a manual UUID-ish string
-    // for older runtimes — only matters in the unlikely case the user
-    // runs this in something ancient.
-    if (window.crypto && typeof window.crypto.randomUUID === "function") {
-        return window.crypto.randomUUID();
+    // The server streams newline-delimited JSON. We read the ReadableStream
+    // until either:
+    //   - a `result` event arrives (success)
+    //   - an `error` event arrives (throw with the server's message)
+    //   - the stream ends without either (treat as a failed run)
+    let response;
+    try {
+        response = await fetch("/spotfinder/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+            // Spotfinder runs can be long for big boxes; explicitly
+            // opt out of any default response timeout the browser
+            // might apply. (Most don't, but be explicit.)
+            cache: "no-store",
+        });
+    } catch (err) {
+        throw new Error("Couldn't reach the Spotfinder service. "
+                      + "Is the FishFinder backend running?");
     }
-    return "sf-" + Math.random().toString(36).slice(2, 10)
-                 + "-" + Date.now().toString(36);
+
+    if (!response.ok) {
+        let msg = `HTTP ${response.status}`;
+        try {
+            const text = await response.text();
+            if (text) msg += ` — ${text.slice(0, 200)}`;
+        } catch (_) { /* swallow */ }
+        throw new Error("Spotfinder backend rejected the request: " + msg);
+    }
+    if (!response.body) {
+        throw new Error("Spotfinder backend returned no body.");
+    }
+
+    const reader  = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let   buf     = "";
+    let   final   = null;
+    let   errMsg  = null;
+
+    // Drain the stream line-by-line. Each newline-terminated chunk is one
+    // JSON event. Partial lines are buffered until the next read.
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let event;
+            try {
+                event = JSON.parse(line);
+            } catch (parseErr) {
+                console.warn("[spotfinder] bad event line:", line);
+                continue;
+            }
+            if (event.type === "progress") {
+                const pct   = Number.isFinite(event.pct)   ? event.pct   : 0;
+                const label = typeof event.label === "string" ? event.label : "";
+                const rem   = Number.isFinite(event.remaining_ms)
+                            ? event.remaining_ms
+                            : undefined;
+                try { report(pct, label, rem); }
+                catch (cbErr) { console.warn("[spotfinder] onProgress threw:", cbErr); }
+            } else if (event.type === "result") {
+                final = event.result;
+            } else if (event.type === "error") {
+                errMsg = event.message || "Spotfinder failed.";
+            } else {
+                console.warn("[spotfinder] unknown event type:", event);
+            }
+        }
+    }
+
+    // Flush any trailing partial line (the server emits a newline after
+    // every event, so this is defensive).
+    if (buf.trim()) {
+        try {
+            const event = JSON.parse(buf.trim());
+            if (event.type === "result") final  = event.result;
+            else if (event.type === "error") errMsg = event.message;
+        } catch (_) { /* swallow */ }
+    }
+
+    if (errMsg) throw new Error(errMsg);
+    if (!final) throw new Error("Spotfinder backend closed the stream "
+                              + "without returning a result.");
+    return final;
 }
 
 

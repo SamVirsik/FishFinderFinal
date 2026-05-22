@@ -21,6 +21,7 @@ server has to do is hand over float32 grids and cache them on disk under
 img/raster/. See `static/map.js` and `static/analyses-worker.js`.
 """
 
+import json
 import logging
 import os
 import struct
@@ -29,7 +30,7 @@ import time
 
 import flask.cli
 import numpy as np
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
 from src.LayerGeneration import UNKNOWN_SOURCE, fetch_tile_raster
 from src.basemap_sources import list_basemaps
@@ -38,6 +39,7 @@ from src.data_sources import (
     all_visible_sources,
     to_client_dict,
 )
+from src.spotfinder import run_spotfinder
 
 
 RASTER_DIR = 'img/raster'
@@ -133,6 +135,55 @@ def spotfinder_page():
     # page bookmarkable and surviveable across reloads. The template
     # parses + validates client-side; the server just renders the shell.
     return render_template('spotfinder.html')
+
+
+@app.route('/spotfinder/run', methods=['POST'])
+def spotfinder_run():
+    """Streaming Spotfinder execution.
+
+    The algorithm is a generator that yields progress / result / error
+    events as plain dicts. We re-emit them as newline-delimited JSON
+    (one event per line) so the browser can update its UI live using
+    fetch() + ReadableStream — no SSE wire format, no polling.
+
+    The Flask request body is the JSON-encoded SpotfinderInput
+    (search_area + params), exactly the same shape the old in-browser
+    stub took. The response body is a stream of newline-delimited JSON
+    events with `Content-Type: application/x-ndjson`.
+
+    Streaming responses run inside Flask's WSGI iterable so each
+    `yield` flushes to the wire as soon as the generator produces it.
+    Network buffering on the proxy side can defer the flush, but the
+    Flask dev server (threaded=True) flushes immediately, which is what
+    matters for local development.
+    """
+    payload = request.get_json(silent=True) or {}
+
+    def stream():
+        try:
+            for event in run_spotfinder(payload):
+                yield json.dumps(event, allow_nan=False) + "\n"
+        except Exception as e:
+            # Last-resort guard: the generator itself raises an
+            # error event for SpotfinderError, but a programmer error
+            # in this module would still bubble through here.
+            print(f"[spotfinder] stream guard caught: {e!r}")
+            yield json.dumps({
+                "type": "error",
+                "message": f"Spotfinder failed: {e.__class__.__name__}",
+            }) + "\n"
+
+    return Response(
+        stream(),
+        mimetype='application/x-ndjson',
+        headers={
+            # Hard-disable caching: progress streams are inherently per-request.
+            'Cache-Control': 'no-store',
+            # Hint to any intermediaries not to buffer (nginx in particular
+            # holds chunked responses by default).
+            'X-Accel-Buffering': 'no',
+        },
+    )
 
 
 @app.route('/sources')

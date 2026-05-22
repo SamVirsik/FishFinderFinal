@@ -1867,54 +1867,141 @@ require([
 
     // ─── Spotfinder ────────────────────────────────────────
     // Bottom-left FAB opens a panel; while the panel is open, the user
-    // can left-click-drag on the map to draw a geo-anchored rectangle.
-    // On release we capture the NE/SW bounds and let the user continue
-    // to /spotfinder with the bbox in the URL.
+    // can left-click-drag on the map to draw a geo-anchored rectangle
+    // (axis-aligned initially), after which the rectangle is in EDIT
+    // MODE: corner / edge / rotation handles are shown, the body is
+    // grab-to-translate, and a Shift-held rotation snaps to 15°.
     //
-    // Two interaction rules:
-    //   1. While active, map panning is suppressed via
-    //      `event.stopPropagation()` on the ArcGIS drag event — same
-    //      mechanism used in the docs to disable pan during sketching.
-    //      Without this the drag would scroll the map instead of
-    //      drawing a box.
-    //   2. The rectangle is rendered via a Polygon in `spotfinderLayer`
-    //      so it stays anchored as the user zooms / pans (after the
-    //      panel is closed and they want to come back later).
+    // INTERACTION DISPATCH:
+    //   On every drag start we hit-test the screen-space positions of
+    //   the handles + the rectangle body. Routes:
+    //     - on a handle    → resize / rotate (handle type decides)
+    //     - inside body    → translate
+    //     - outside        → start a new draw (cleanly replaces the
+    //                        existing rectangle — that's the documented
+    //                        "fresh draw replaces" policy)
+    //
+    //   ArcGIS's pan is suppressed by `event.stopPropagation()` while
+    //   the panel is open, the same trick the original drag-to-draw
+    //   implementation used. Wheel/pinch zoom continues to work.
+    //
+    // STATE:
+    //   `area`        — the live SearchArea (from spotfinder-shape.js)
+    //                   or null if nothing drawn yet.
+    //   `dragState`   — null when idle; otherwise an object with `kind`
+    //                   (`draw` / `translate` / `resize-corner` /
+    //                   `resize-edge` / `rotate`) plus the per-drag
+    //                   anchors needed to derive the next geometry.
+    //
+    // RENDERING:
+    //   Two layers stacked above the bathymetry tiles:
+    //     * spotfinderLayer        — the rectangle polygon itself
+    //     * spotfinderHandleLayer  — handles + rotation arm + top-edge
+    //                                tick. Re-drawn whenever the area
+    //                                changes OR the view zoom/extent
+    //                                changes (so the 20-px rotation arm
+    //                                rescales with screen).
     //
     // Mutually exclusive with the measurement tool: entering Spotfinder
-    // exits any active measurement session so the cursor/click semantics
-    // don't conflict. Existing measurement geometry stays on screen.
+    // exits any active measurement session so the cursor/click
+    // semantics don't conflict. Existing measurement geometry stays on
+    // screen.
+
+    const SHAPE = window.FishFinderSpotfinderShape;
 
     const $spotfinderFab       = document.getElementById("spotfinder-fab");
     const $spotfinderPanel     = document.getElementById("spotfinder-panel");
     const $spotfinderClose     = document.getElementById("spotfinder-panel-close");
     const $spotfinderStatusTag = document.getElementById("spotfinder-status-tag");
     const $spotfinderHint      = document.getElementById("spotfinder-hint");
-    const $spotfinderNE        = document.getElementById("spotfinder-ne");
-    const $spotfinderSW        = document.getElementById("spotfinder-sw");
+    const $spotfinderCenter    = document.getElementById("spotfinder-center");
+    const $spotfinderSize      = document.getElementById("spotfinder-size");
+    const $spotfinderRotation  = document.getElementById("spotfinder-rotation");
+    const $spotfinderArea      = document.getElementById("spotfinder-area");
     const $spotfinderRedraw    = document.getElementById("spotfinder-redraw-btn");
     const $spotfinderContinue  = document.getElementById("spotfinder-continue-btn");
+
+    // A second graphics layer just for handles so the rectangle's fill
+    // colour never bleeds onto them and so a handle redraw never
+    // touches the rectangle polygon.
+    const spotfinderHandleLayer = new GraphicsLayer({ listMode: "hide" });
+    // Sits ABOVE spotfinderLayer (which itself sits among the runs +
+    // marker layers; the runs activation code inserts heatmaps at
+    // index 1 and spots just below marker, so handles need to land at
+    // the very top so they're never obscured by an active heatmap).
+    map.layers.add(spotfinderHandleLayer);
 
     const SPOTFINDER_FILL_SYMBOL = {
         type: "simple-fill",
         color: [179, 136, 255, 0.16],
-        outline: { color: [179, 136, 255, 0.95], width: 2, style: "solid" },
+        outline: { color: [179, 136, 255, 1.0], width: 2.5, style: "solid" },
     };
     const SPOTFINDER_DRAFT_SYMBOL = {
         type: "simple-fill",
         color: [179, 136, 255, 0.10],
         outline: { color: [179, 136, 255, 0.85], width: 1.5, style: "dash" },
     };
+    // Handles always render upright on screen (simple-marker symbols
+    // are not rotated by the underlying geometry), per spec.
+    const HANDLE_CORNER_SYMBOL = {
+        type: "simple-marker", style: "square", size: 11,
+        color: [255, 255, 255, 1.0],
+        outline: { color: [60, 30, 110, 1.0], width: 1.5 },
+    };
+    const HANDLE_EDGE_SYMBOL = {
+        type: "simple-marker", style: "square", size: 9,
+        color: [255, 255, 255, 1.0],
+        outline: { color: [60, 30, 110, 1.0], width: 1.5 },
+    };
+    const HANDLE_ROTATION_SYMBOL = {
+        type: "simple-marker", style: "circle", size: 13,
+        color: [179, 136, 255, 1.0],
+        outline: { color: [255, 255, 255, 1.0], width: 2 },
+    };
+    const HANDLE_ARM_SYMBOL = {
+        type: "simple-line",
+        color: [179, 136, 255, 1.0], width: 1.5, style: "solid",
+    };
+    // Top-edge orientation tick. A short stroke OUTWARD from the top
+    // edge midpoint so the user can read which side is "up" at a
+    // glance even when the rotation handle is hidden mid-drag.
+    const HANDLE_TICK_SYMBOL = {
+        type: "simple-line",
+        color: [255, 255, 255, 0.95], width: 3, style: "solid",
+    };
 
-    let spotfinderActive = false;   // panel open?
-    let spotfinderDrawing = false;  // mid-drag?
-    let spotfinderStart   = null;   // {lon, lat} drag origin
-    let spotfinderBounds  = null;   // {n, s, e, w} once a rectangle exists
+    // Hit-test radii in pixels. Corners win over edges when overlapping
+    // (smaller target), so check corners first in `hitTestHandles`.
+    const HIT_RADIUS_HANDLE   = 14;
+    const HIT_RADIUS_ROTATION = 16;
+    // Rotation arm length in screen pixels — the spec calls for ~20px,
+    // slightly tuned up so the handle clears the top-edge tick.
+    const ROTATION_ARM_PX = 24;
+    // Top-edge tick length in pixels (purely cosmetic).
+    const TOP_TICK_PX = 12;
 
-    function fmtCoord(lat, lon) {
+    let spotfinderActive = false;    // panel open?
+    let area = null;                 // live SearchArea, or null
+    let dragState = null;            // see "STATE" comment above
+
+    // ─── Formatting helpers ────────────────────────────────
+    function fmtLatLng(lat, lng) {
         const ns = lat >= 0 ? "N" : "S";
-        const ew = lon >= 0 ? "E" : "W";
-        return `${Math.abs(lat).toFixed(5)}° ${ns}, ${Math.abs(lon).toFixed(5)}° ${ew}`;
+        const ew = lng >= 0 ? "E" : "W";
+        return `${Math.abs(lat).toFixed(4)}° ${ns}, `
+             + `${Math.abs(lng).toFixed(4)}° ${ew}`;
+    }
+    function fmtSizeKm(m) {
+        if (m < 1000) return `${m.toFixed(0)} m`;
+        return `${(m / 1000).toFixed(m < 10000 ? 2 : 1)} km`;
+    }
+    function fmtRotationDeg(deg) {
+        // Wrap to (-180, 180] so the readout never shows e.g. "359°".
+        let d = ((deg + 180) % 360 + 360) % 360 - 180;
+        if (d === -180) d = 180;
+        if (Math.abs(d) < 0.5) return "0° — axis-aligned";
+        const dir = d > 0 ? "clockwise" : "counter-clockwise";
+        return `${Math.abs(d).toFixed(d < 1 ? 1 : 0)}° ${dir}`;
     }
 
     function setSpotfinderStatus(state) {
@@ -1931,63 +2018,500 @@ require([
     }
 
     function syncSpotfinderUI() {
-        const hasBounds = spotfinderBounds !== null;
-        $spotfinderRedraw.disabled  = !hasBounds;
-        $spotfinderContinue.disabled = !hasBounds;
-        if (hasBounds) {
+        const hasArea = area !== null;
+        // Continue is enabled the moment the rectangle has nonzero
+        // area, regardless of rotation. width/height are guaranteed >0
+        // by the drag-end "reject degenerate" guard.
+        $spotfinderRedraw.disabled   = !hasArea;
+        $spotfinderContinue.disabled = !hasArea;
+        if (hasArea) {
             setSpotfinderStatus("defined");
-            $spotfinderNE.textContent = fmtCoord(
-                spotfinderBounds.n, spotfinderBounds.e);
-            $spotfinderSW.textContent = fmtCoord(
-                spotfinderBounds.s, spotfinderBounds.w);
+            $spotfinderCenter.textContent   = fmtLatLng(area.center.lat, area.center.lng);
+            $spotfinderSize.textContent     = `${fmtSizeKm(area.width_m)} × ${fmtSizeKm(area.height_m)}`;
+            $spotfinderRotation.textContent = fmtRotationDeg(area.rotation_deg);
+            $spotfinderArea.textContent     = `${SHAPE.areaKm2(area).toFixed(2)} km²`;
             $spotfinderHint.textContent =
-                "Continue to Spotfinder, or press Redraw to start over.";
-        } else if (spotfinderDrawing) {
+                "Drag handles to resize or rotate, the rectangle body to move. "
+              + "Press Continue when ready.";
+        } else if (dragState && dragState.kind === "draw") {
             setSpotfinderStatus("drawing");
-            $spotfinderNE.textContent = "—";
-            $spotfinderSW.textContent = "—";
+            $spotfinderCenter.textContent   = "—";
+            $spotfinderSize.textContent     = "—";
+            $spotfinderRotation.textContent = "—";
+            $spotfinderArea.textContent     = "—";
             $spotfinderHint.textContent = "Release to lock in the rectangle.";
         } else {
             setSpotfinderStatus("undrawn");
-            $spotfinderNE.textContent = "—";
-            $spotfinderSW.textContent = "—";
-            $spotfinderHint.textContent = "Drag on the map to draw a rectangle.";
+            $spotfinderCenter.textContent   = "—";
+            $spotfinderSize.textContent     = "—";
+            $spotfinderRotation.textContent = "—";
+            $spotfinderArea.textContent     = "—";
+            $spotfinderHint.textContent =
+                "Drag on the map to draw a rectangle. After drawing, "
+              + "use the handles to resize, rotate, or move it.";
         }
     }
 
-    function rectFromCorners(a, b) {
-        // a, b are {lon, lat}. Returns a Polygon ring in geographic
-        // coords (wkid 4326). Web Mercator handles wrapping for us
-        // when ArcGIS reprojects for display — we just need a sane
-        // ring with consistent winding.
-        const w = Math.min(a.lon, b.lon);
-        const e = Math.max(a.lon, b.lon);
-        const s = Math.min(a.lat, b.lat);
-        const n = Math.max(a.lat, b.lat);
-        const ring = [[w, s], [w, n], [e, n], [e, s], [w, s]];
-        return {
-            polygon: new Polygon({
-                rings: [ring],
-                spatialReference: { wkid: 4326 },
-            }),
-            bounds: { n, s, e, w },
-        };
+
+    // ─── Rect rendering ────────────────────────────────────
+    function ringFromCorners(corners) {
+        // corners: TL, TR, BR, BL (lat/lng). Close the ring with TL again.
+        const c = corners;
+        return [
+            [c[0].lng, c[0].lat],
+            [c[1].lng, c[1].lat],
+            [c[2].lng, c[2].lat],
+            [c[3].lng, c[3].lat],
+            [c[0].lng, c[0].lat],
+        ];
     }
 
-    function drawSpotfinderRect(a, b, symbol) {
+    function drawRectFromCorners(corners, symbol) {
         spotfinderLayer.removeAll();
-        const { polygon } = rectFromCorners(a, b);
         spotfinderLayer.add(new Graphic({
-            geometry: polygon,
+            geometry: new Polygon({
+                rings: [ringFromCorners(corners)],
+                spatialReference: { wkid: 4326 },
+            }),
             symbol,
         }));
     }
 
-    function clearSpotfinderRect() {
+    function renderArea() {
+        if (!area) {
+            spotfinderLayer.removeAll();
+            spotfinderHandleLayer.removeAll();
+            return;
+        }
+        drawRectFromCorners(area.corners, SPOTFINDER_FILL_SYMBOL);
+        renderHandles();
+    }
+
+    /**
+     * Re-render the handles. The rotation arm + top-edge tick are
+     * positioned in SCREEN pixel space (so they stay visually
+     * constant-size across zoom levels), then back-projected to map
+     * coordinates. Handles themselves anchor at known map locations
+     * (the corners + edge midpoints) so they don't need re-projection
+     * on each frame — only the screen-space accents do.
+     */
+    function renderHandles() {
+        spotfinderHandleLayer.removeAll();
+        if (!area) return;
+        if (dragState && dragState.kind === "draw") return;  // draw mode hides handles
+
+        const corners = area.corners;
+        // Corner handles (4). attributes.handleType is what
+        // hitTestHandles dispatches on.
+        for (let i = 0; i < 4; i++) {
+            spotfinderHandleLayer.add(new Graphic({
+                geometry: new Point({
+                    longitude: corners[i].lng, latitude: corners[i].lat,
+                    spatialReference: { wkid: 4326 },
+                }),
+                symbol: HANDLE_CORNER_SYMBOL,
+                attributes: { handleType: "corner", cornerIdx: i },
+            }));
+        }
+
+        // Edge midpoint handles (4). Index 0=top (TL-TR mid), 1=right
+        // (TR-BR), 2=bottom (BR-BL), 3=left (BL-TL). Order matters for
+        // the resize logic in `applyResizeEdge`.
+        const edgeMids = edgeMidpointsLatLng(corners);
+        for (let i = 0; i < 4; i++) {
+            spotfinderHandleLayer.add(new Graphic({
+                geometry: new Point({
+                    longitude: edgeMids[i].lng, latitude: edgeMids[i].lat,
+                    spatialReference: { wkid: 4326 },
+                }),
+                symbol: HANDLE_EDGE_SYMBOL,
+                attributes: { handleType: "edge", edgeIdx: i },
+            }));
+        }
+
+        // Rotation handle + arm + top tick. All three live in screen
+        // space so they look right at any zoom level.
+        const topMidScr = view.toScreen(new Point({
+            longitude: edgeMids[0].lng, latitude: edgeMids[0].lat,
+            spatialReference: { wkid: 4326 },
+        }));
+        const centerScr = view.toScreen(new Point({
+            longitude: area.center.lng, latitude: area.center.lat,
+            spatialReference: { wkid: 4326 },
+        }));
+        if (topMidScr && centerScr) {
+            // Outward unit vector (from center to top midpoint).
+            const dx = topMidScr.x - centerScr.x;
+            const dy = topMidScr.y - centerScr.y;
+            const mag = Math.hypot(dx, dy) || 1;
+            const ux = dx / mag, uy = dy / mag;
+
+            // Rotation handle position.
+            const handleScr = {
+                x: topMidScr.x + ux * ROTATION_ARM_PX,
+                y: topMidScr.y + uy * ROTATION_ARM_PX,
+            };
+            const handleMap = view.toMap(handleScr);
+            if (handleMap) {
+                spotfinderHandleLayer.add(new Graphic({
+                    geometry: new Polyline({
+                        paths: [[
+                            [edgeMids[0].lng, edgeMids[0].lat],
+                            [handleMap.longitude, handleMap.latitude],
+                        ]],
+                        spatialReference: { wkid: 4326 },
+                    }),
+                    symbol: HANDLE_ARM_SYMBOL,
+                }));
+                spotfinderHandleLayer.add(new Graphic({
+                    geometry: new Point({
+                        longitude: handleMap.longitude,
+                        latitude: handleMap.latitude,
+                        spatialReference: { wkid: 4326 },
+                    }),
+                    symbol: HANDLE_ROTATION_SYMBOL,
+                    attributes: { handleType: "rotation" },
+                }));
+            }
+
+            // Top-edge orientation tick: a short outward stroke from
+            // the top midpoint. Same direction as the rotation arm,
+            // shorter and white so it doesn't look like another handle.
+            const tickStart = topMidScr;
+            const tickEnd = {
+                x: topMidScr.x + ux * TOP_TICK_PX,
+                y: topMidScr.y + uy * TOP_TICK_PX,
+            };
+            const tickStartMap = view.toMap(tickStart);
+            const tickEndMap   = view.toMap(tickEnd);
+            if (tickStartMap && tickEndMap) {
+                spotfinderHandleLayer.add(new Graphic({
+                    geometry: new Polyline({
+                        paths: [[
+                            [tickStartMap.longitude, tickStartMap.latitude],
+                            [tickEndMap.longitude,   tickEndMap.latitude],
+                        ]],
+                        spatialReference: { wkid: 4326 },
+                    }),
+                    symbol: HANDLE_TICK_SYMBOL,
+                }));
+            }
+        }
+    }
+
+    function edgeMidpointsLatLng(corners) {
+        // Midpoints in lat/lng — fine at this scale. (Mercator midpoints
+        // would round-trip identically for the purpose of drawing the
+        // handles, since we never reverse-engineer them into local-frame
+        // distances; resize uses the corner geometry directly.)
+        const mid = (a, b) => ({ lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 });
+        return [
+            mid(corners[0], corners[1]),   // top    (TL-TR)
+            mid(corners[1], corners[2]),   // right  (TR-BR)
+            mid(corners[2], corners[3]),   // bottom (BR-BL)
+            mid(corners[3], corners[0]),   // left   (BL-TL)
+        ];
+    }
+
+
+    // ─── Hit testing (screen-space) ────────────────────────
+    function distSq(ax, ay, bx, by) {
+        const dx = ax - bx, dy = ay - by;
+        return dx * dx + dy * dy;
+    }
+
+    /**
+     * Project a {lat, lng} to screen pixels. Returns null if the point
+     * is offscreen / unprojectable (happens far from the viewport).
+     */
+    function toScreen(latLng) {
+        return view.toScreen(new Point({
+            longitude: latLng.lng, latitude: latLng.lat,
+            spatialReference: { wkid: 4326 },
+        }));
+    }
+
+    /**
+     * Returns the handle hit at screen-space (sx, sy), or null. Corner
+     * handles win over edge handles when overlapping (smaller visual
+     * target, so the user's intent is corner). The rotation handle is
+     * checked separately and at a generous radius.
+     */
+    function hitTestHandles(sx, sy) {
+        if (!area) return null;
+        const corners = area.corners;
+        // Corners first.
+        for (let i = 0; i < 4; i++) {
+            const p = toScreen(corners[i]);
+            if (p && distSq(sx, sy, p.x, p.y) <= HIT_RADIUS_HANDLE * HIT_RADIUS_HANDLE) {
+                return { handleType: "corner", cornerIdx: i };
+            }
+        }
+        // Edges.
+        const edgeMids = edgeMidpointsLatLng(corners);
+        for (let i = 0; i < 4; i++) {
+            const p = toScreen(edgeMids[i]);
+            if (p && distSq(sx, sy, p.x, p.y) <= HIT_RADIUS_HANDLE * HIT_RADIUS_HANDLE) {
+                return { handleType: "edge", edgeIdx: i };
+            }
+        }
+        // Rotation handle (position derived from top midpoint, same
+        // math as renderHandles).
+        const topMidScr = toScreen(edgeMids[0]);
+        const centerScr = toScreen(area.center);
+        if (topMidScr && centerScr) {
+            const dx = topMidScr.x - centerScr.x;
+            const dy = topMidScr.y - centerScr.y;
+            const mag = Math.hypot(dx, dy) || 1;
+            const ux = dx / mag, uy = dy / mag;
+            const hx = topMidScr.x + ux * ROTATION_ARM_PX;
+            const hy = topMidScr.y + uy * ROTATION_ARM_PX;
+            if (distSq(sx, sy, hx, hy) <= HIT_RADIUS_ROTATION * HIT_RADIUS_ROTATION) {
+                return { handleType: "rotation" };
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Point-in-rectangle test, in screen space. Used to dispatch a
+     * drag that didn't land on a handle: inside → translate, outside →
+     * new draw. Uses the standard "point on left side of every edge
+     * (consistent winding)" check that works for any convex quad.
+     */
+    function pointInRect(sx, sy) {
+        if (!area) return false;
+        const c = area.corners;
+        const screen = c.map(toScreen);
+        if (screen.some(p => !p)) return false;
+        // Consistent CW winding (TL → TR → BR → BL in lat/lng maps to
+        // CW in screen coords because the screen y-axis is flipped).
+        // For each edge, check that the test point is on the right
+        // side. If any edge says otherwise, it's outside.
+        let sign = 0;
+        for (let i = 0; i < 4; i++) {
+            const a = screen[i];
+            const b = screen[(i + 1) % 4];
+            const cross = (b.x - a.x) * (sy - a.y) - (b.y - a.y) * (sx - a.x);
+            if (cross === 0) continue;
+            const s = cross > 0 ? 1 : -1;
+            if (sign === 0) sign = s;
+            else if (s !== sign) return false;
+        }
+        return true;
+    }
+
+
+    // ─── Geometry mutations ────────────────────────────────
+    function projectArea() {
+        // Cached Mercator centre — used by every resize / rotate math
+        // path. Recomputed per drag (called once on "start") because
+        // the centre can move mid-drag and we want the same anchor
+        // throughout a single drag.
+        return SHAPE.project(area.center.lat, area.center.lng);
+    }
+    function projectLatLng(p) {
+        return SHAPE.project(p.lat, p.lng);
+    }
+    function unprojectXY(x, y) {
+        return SHAPE.unproject(x, y);
+    }
+
+    function buildAreaFrom(centerLat, centerLng, widthM, heightM, rotationDeg) {
+        // Minimum 1 m so we never produce a degenerate SearchArea.
+        return SHAPE.buildSearchArea(
+            centerLat, centerLng,
+            Math.max(1, widthM), Math.max(1, heightM),
+            rotationDeg
+        );
+    }
+
+    function startResizeCorner(cornerIdx, _startMapPt) {
+        // Opposite corner (index + 2 mod 4) stays fixed for the whole
+        // drag. Snapshot it in Mercator now so subsequent drag updates
+        // don't have to fight floating-point drift.
+        const oppIdx = (cornerIdx + 2) % 4;
+        const opposite = projectLatLng(area.corners[oppIdx]);
+        return {
+            kind: "resize-corner",
+            cornerIdx,
+            oppositeMerc: opposite,
+            rotationDeg: area.rotation_deg,
+        };
+    }
+    function applyResizeCorner(state, mapPt) {
+        // Drag point in Mercator.
+        const drag = SHAPE.project(mapPt.latitude, mapPt.longitude);
+        const opp  = state.oppositeMerc;
+        // Vector from opposite corner to drag point.
+        const vx = drag.x - opp.x;
+        const vy = drag.y - opp.y;
+        // Express in the local frame (un-rotate by -rotation_deg).
+        const local = SHAPE.rotateClockwise(vx, vy, -state.rotationDeg);
+        // The local vector spans the whole rectangle (opposite → dragged
+        // corner is the rect's diagonal). Width/height in Mercator are
+        // |local.dx|, |local.dy|.
+        const widthMerc  = Math.abs(local.dx);
+        const heightMerc = Math.abs(local.dy);
+        // New centre = midpoint of opposite + drag in Mercator → lat/lng.
+        const cx = (opp.x + drag.x) / 2;
+        const cy = (opp.y + drag.y) / 2;
+        const center = unprojectXY(cx, cy);
+        // Convert Mercator → ground metres at the NEW centre latitude.
+        const scale = SHAPE.mercatorScaleAt(center.lat);
+        area = buildAreaFrom(
+            center.lat, center.lng,
+            widthMerc * scale, heightMerc * scale,
+            state.rotationDeg,
+        );
+    }
+
+    function startResizeEdge(edgeIdx, _startMapPt) {
+        // The OPPOSITE edge stays fixed. Snapshot its two corners in
+        // Mercator (= a line segment that the new rectangle's
+        // opposite-edge corners must continue to lie on). The
+        // OTHER dimension (perpendicular to the edge being dragged)
+        // also stays fixed.
+        const oppEdgeIdx = (edgeIdx + 2) % 4;
+        // Each edge connects corners[edgeIdx] and corners[edgeIdx+1].
+        const oppA = projectLatLng(area.corners[oppEdgeIdx]);
+        const oppB = projectLatLng(area.corners[(oppEdgeIdx + 1) % 4]);
+        return {
+            kind:         "resize-edge",
+            edgeIdx,
+            oppAMerc:     oppA,
+            oppBMerc:     oppB,
+            rotationDeg:  area.rotation_deg,
+            // The dimension perpendicular to the dragged edge changes;
+            // the parallel dimension stays at this value:
+            keptDimM:     (edgeIdx % 2 === 0) ? area.width_m : area.height_m,
+        };
+    }
+    function applyResizeEdge(state, mapPt) {
+        const drag = SHAPE.project(mapPt.latitude, mapPt.longitude);
+        // Midpoint of the opposite edge stays anchored.
+        const oppMidX = (state.oppAMerc.x + state.oppBMerc.x) / 2;
+        const oppMidY = (state.oppAMerc.y + state.oppBMerc.y) / 2;
+        // Vector from opposite-edge midpoint to drag point. Project
+        // onto the local axis perpendicular to the kept dimension.
+        const vx = drag.x - oppMidX;
+        const vy = drag.y - oppMidY;
+        const local = SHAPE.rotateClockwise(vx, vy, -state.rotationDeg);
+        // edgeIdx 0=top → moves along +local.dy; 2=bottom → -local.dy.
+        // edgeIdx 1=right → +local.dx; 3=left → -local.dx.
+        // Either way, the new dimension is |projection along that axis|.
+        const movingHeight = (state.edgeIdx === 0 || state.edgeIdx === 2);
+        const projection = movingHeight ? local.dy : local.dx;
+        const newDimMerc = Math.abs(projection);
+        // New centre lies halfway between opp midpoint and drag point
+        // ALONG the perpendicular axis only. Translate opp midpoint by
+        // projection / 2 in that axis (in local frame), then rotate
+        // back into Mercator.
+        const halfLocal = { dx: 0, dy: 0 };
+        if (movingHeight) halfLocal.dy = projection / 2;
+        else              halfLocal.dx = projection / 2;
+        const halfMerc = SHAPE.rotateClockwise(halfLocal.dx, halfLocal.dy, state.rotationDeg);
+        const cx = oppMidX + halfMerc.dx;
+        const cy = oppMidY + halfMerc.dy;
+        const center = unprojectXY(cx, cy);
+        const scale = SHAPE.mercatorScaleAt(center.lat);
+        const newDimM = newDimMerc * scale;
+        const widthM  = movingHeight ? state.keptDimM : newDimM;
+        const heightM = movingHeight ? newDimM       : state.keptDimM;
+        area = buildAreaFrom(center.lat, center.lng,
+                             widthM, heightM, state.rotationDeg);
+    }
+
+    function startRotate(_startMapPt) {
+        // The rotation handle is being dragged. We don't actually need
+        // a "start angle" anchor because we recompute the absolute
+        // angle every frame (from centre → cursor); we just snapshot
+        // the dimensions + centre so the rotate path doesn't fight
+        // floating-point drift from buildSearchArea ↔ unproject.
+        return {
+            kind:    "rotate",
+            centerMerc: projectArea(),
+            widthM:  area.width_m,
+            heightM: area.height_m,
+            centerLat: area.center.lat,
+            centerLng: area.center.lng,
+        };
+    }
+    function applyRotate(state, mapPt, shiftKey) {
+        const drag = SHAPE.project(mapPt.latitude, mapPt.longitude);
+        // Vector from centre to drag.
+        const vx = drag.x - state.centerMerc.x;
+        const vy = drag.y - state.centerMerc.y;
+        // Clockwise angle from north: atan2(east, north) = atan2(vx, vy).
+        let deg = Math.atan2(vx, vy) * 180 / Math.PI;
+        if (shiftKey) {
+            // 15° snap per spec. Round to nearest 15°.
+            deg = Math.round(deg / 15) * 15;
+        }
+        area = buildAreaFrom(
+            state.centerLat, state.centerLng,
+            state.widthM, state.heightM,
+            deg,
+        );
+    }
+
+    function startTranslate(startMapPt) {
+        return {
+            kind:        "translate",
+            startMerc:   SHAPE.project(startMapPt.latitude, startMapPt.longitude),
+            startCenterMerc: projectArea(),
+            widthM:      area.width_m,
+            heightM:     area.height_m,
+            rotationDeg: area.rotation_deg,
+        };
+    }
+    function applyTranslate(state, mapPt) {
+        const drag = SHAPE.project(mapPt.latitude, mapPt.longitude);
+        const dx = drag.x - state.startMerc.x;
+        const dy = drag.y - state.startMerc.y;
+        const newCenterMerc = {
+            x: state.startCenterMerc.x + dx,
+            y: state.startCenterMerc.y + dy,
+        };
+        const center = unprojectXY(newCenterMerc.x, newCenterMerc.y);
+        area = buildAreaFrom(center.lat, center.lng,
+                             state.widthM, state.heightM, state.rotationDeg);
+    }
+
+
+    // ─── Draw (initial) ───────────────────────────────────
+    function startDraw(startMapPt) {
+        return {
+            kind:    "draw",
+            startLatLng: { lat: startMapPt.latitude, lng: startMapPt.longitude },
+            // Track the latest position for the live preview symbol.
+            lastLatLng: null,
+        };
+    }
+    function applyDraw(state, mapPt) {
+        state.lastLatLng = { lat: mapPt.latitude, lng: mapPt.longitude };
+        // Build an axis-aligned SearchArea from the drag rectangle.
+        // The drag is in lat/lng; convert to centre + width/height in
+        // metres at the centre latitude via the shape helpers.
+        const a = state.startLatLng, b = state.lastLatLng;
+        const north = Math.max(a.lat, b.lat);
+        const south = Math.min(a.lat, b.lat);
+        const east  = Math.max(a.lng, b.lng);
+        const west  = Math.min(a.lng, b.lng);
+        const draftArea = SHAPE.searchAreaFromBbox({ north, south, east, west });
+        // Live preview uses the dashed draft symbol — handles stay
+        // hidden during the initial draw.
+        drawRectFromCorners(draftArea.corners, SPOTFINDER_DRAFT_SYMBOL);
+        return draftArea;
+    }
+
+
+    // ─── Drag dispatch ────────────────────────────────────
+    function clearSpotfinder() {
+        area = null;
+        dragState = null;
         spotfinderLayer.removeAll();
-        spotfinderBounds = null;
-        spotfinderStart  = null;
-        spotfinderDrawing = false;
+        spotfinderHandleLayer.removeAll();
     }
 
     function openSpotfinderPanel() {
@@ -2005,12 +2529,13 @@ require([
     function closeSpotfinderPanel() {
         spotfinderActive = false;
         $workspace.classList.remove("spotfinder-active");
+        setHoverCursor(null);
         $spotfinderPanel.classList.add("collapsed");
         $spotfinderFab.classList.remove("hidden");
         $spotfinderFab.setAttribute("aria-expanded", "false");
         // Closing cleans up everything related to drawing per the
         // brief — drop the rectangle, status, and any in-flight drag.
-        clearSpotfinderRect();
+        clearSpotfinder();
         syncSpotfinderUI();
     }
 
@@ -2028,68 +2553,167 @@ require([
     });
 
     $spotfinderRedraw.addEventListener("click", () => {
-        clearSpotfinderRect();
+        clearSpotfinder();
         syncSpotfinderUI();
     });
 
     $spotfinderContinue.addEventListener("click", () => {
-        if (!spotfinderBounds) return;
-        const { n, s, e, w } = spotfinderBounds;
-        const q = new URLSearchParams({
-            n: n.toFixed(6),
-            s: s.toFixed(6),
-            e: e.toFixed(6),
-            w: w.toFixed(6),
-        });
+        if (!area) return;
+        const enc = SHAPE.encodeForUrl(area);
+        // Also include legacy n/s/e/w so older bookmarks and any
+        // outside tool that consumed the old URL shape keep working.
+        // Old consumers will read it as the AABB, which is correct
+        // up to "they don't know about the rotation".
+        enc.n = area.bbox.north.toFixed(6);
+        enc.s = area.bbox.south.toFixed(6);
+        enc.e = area.bbox.east.toFixed(6);
+        enc.w = area.bbox.west.toFixed(6);
+        const q = new URLSearchParams(enc);
         window.location.href = `/spotfinder?${q.toString()}`;
     });
 
-    // Drag handler. ArcGIS's drag event fires for both pan and pinch;
-    // we only intercept it when the Spotfinder panel is open. The
-    // stopPropagation() call is what disables panning — ArcGIS's
-    // default handler runs in capture phase after listeners, so as
-    // long as we stop the event the map will not pan.
+
+    // ─── Cursor hover hint ─────────────────────────────────
+    // We attach a single set of classes to the workspace and toggle
+    // them based on hit-test results. Each class maps to a cursor that
+    // hints at the action the user would get if they dragged here.
+    function setHoverCursor(kind) {
+        const wsc = $workspace.classList;
+        wsc.remove("sf-cursor-grab", "sf-cursor-rotate",
+                   "sf-cursor-resize", "sf-cursor-move");
+        if (kind) wsc.add(`sf-cursor-${kind}`);
+    }
+    view.on("pointer-move", (event) => {
+        if (!spotfinderActive) return;
+        // Mid-drag: cursor stays at whatever the drag set, never
+        // hover-derived (which would be wrong while resizing).
+        if (dragState) return;
+        if (!area) { setHoverCursor(null); return; }
+        const hit = hitTestHandles(event.x, event.y);
+        if (hit) {
+            if (hit.handleType === "rotation") setHoverCursor("rotate");
+            else                                setHoverCursor("resize");
+        } else if (pointInRect(event.x, event.y)) {
+            setHoverCursor("move");
+        } else {
+            setHoverCursor(null);
+        }
+    });
+    view.on("pointer-leave", () => { if (spotfinderActive) setHoverCursor(null); });
+
+
+    // ─── Drag pipeline ─────────────────────────────────────
     view.on("drag", (event) => {
         if (!spotfinderActive) return;
         if (event.button !== 0) return;       // ignore right/middle drag
         event.stopPropagation();
 
-        const screenPt = { x: event.x, y: event.y };
-        const mapPt = view.toMap(screenPt);
-        if (!mapPt) return;
-        const lat = mapPt.latitude;
-        const lon = mapPt.longitude;
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        const mapPt = view.toMap({ x: event.x, y: event.y });
+        if (!mapPt
+            || !Number.isFinite(mapPt.latitude)
+            || !Number.isFinite(mapPt.longitude)) return;
+
+        const shiftKey = !!(event.native && event.native.shiftKey);
 
         if (event.action === "start") {
-            spotfinderDrawing = true;
-            spotfinderBounds  = null;
-            spotfinderStart   = { lon, lat };
-            spotfinderLayer.removeAll();
-            syncSpotfinderUI();
-        } else if (event.action === "update" && spotfinderStart) {
-            drawSpotfinderRect(spotfinderStart, { lon, lat },
-                               SPOTFINDER_DRAFT_SYMBOL);
-        } else if (event.action === "end" && spotfinderStart) {
-            spotfinderDrawing = false;
-            const { bounds } = rectFromCorners(spotfinderStart, { lon, lat });
-            // Reject degenerate boxes (a click without movement). The
-            // user shouldn't see a status flip on a stray click.
-            const dx = Math.abs(bounds.e - bounds.w);
-            const dy = Math.abs(bounds.n - bounds.s);
-            if (dx < 1e-6 || dy < 1e-6) {
-                spotfinderLayer.removeAll();
-                spotfinderStart = null;
-                syncSpotfinderUI();
-                return;
+            // Decide which drag-mode this is BEFORE doing anything
+            // destructive to `area`. Order: handle hit > body interior
+            // > otherwise a fresh draw (replaces).
+            if (area) {
+                const hit = hitTestHandles(event.x, event.y);
+                if (hit) {
+                    if (hit.handleType === "corner") {
+                        dragState = startResizeCorner(hit.cornerIdx, mapPt);
+                    } else if (hit.handleType === "edge") {
+                        dragState = startResizeEdge(hit.edgeIdx, mapPt);
+                    } else if (hit.handleType === "rotation") {
+                        dragState = startRotate(mapPt);
+                    }
+                    return;
+                }
+                if (pointInRect(event.x, event.y)) {
+                    dragState = startTranslate(mapPt);
+                    return;
+                }
             }
-            drawSpotfinderRect(spotfinderStart, { lon, lat },
-                               SPOTFINDER_FILL_SYMBOL);
-            spotfinderBounds = bounds;
-            spotfinderStart  = null;
+            // Either no rectangle exists or the drag started outside →
+            // replace cleanly. Hand the live preview a new draft area.
+            area = null;
+            dragState = startDraw(mapPt);
+            spotfinderLayer.removeAll();
+            spotfinderHandleLayer.removeAll();
             syncSpotfinderUI();
+            return;
+        }
+
+        if (!dragState) return;  // drag we never claimed
+
+        if (event.action === "update") {
+            if (dragState.kind === "draw") {
+                applyDraw(dragState, mapPt);
+                syncSpotfinderUI();
+            } else if (dragState.kind === "translate") {
+                applyTranslate(dragState, mapPt);
+                renderArea();
+                syncSpotfinderUI();
+            } else if (dragState.kind === "resize-corner") {
+                applyResizeCorner(dragState, mapPt);
+                renderArea();
+                syncSpotfinderUI();
+            } else if (dragState.kind === "resize-edge") {
+                applyResizeEdge(dragState, mapPt);
+                renderArea();
+                syncSpotfinderUI();
+            } else if (dragState.kind === "rotate") {
+                applyRotate(dragState, mapPt, shiftKey);
+                renderArea();
+                syncSpotfinderUI();
+            }
+        } else if (event.action === "end") {
+            if (dragState.kind === "draw") {
+                const finalArea = dragState.lastLatLng
+                    ? applyDraw(dragState, mapPt)
+                    : null;
+                dragState = null;
+                if (!finalArea
+                    || finalArea.width_m < 1 || finalArea.height_m < 1) {
+                    // Treat as a click (no movement). Clear any draft
+                    // preview and stay in undrawn state.
+                    area = null;
+                    spotfinderLayer.removeAll();
+                    spotfinderHandleLayer.removeAll();
+                    syncSpotfinderUI();
+                    return;
+                }
+                area = finalArea;
+                renderArea();
+                syncSpotfinderUI();
+            } else {
+                // resize / rotate / translate end — geometry is already
+                // up to date from the last "update".
+                dragState = null;
+                renderArea();
+                syncSpotfinderUI();
+            }
         }
     });
+
+    // The rotation arm + top-edge tick are positioned in screen
+    // pixels and back-projected to map coords, so they need a refresh
+    // whenever the screen projection changes (pan/zoom). Throttle to
+    // one re-render per animation frame — `view.extent` fires
+    // continuously during a pan and a per-event redraw would churn
+    // GraphicsLayer for no visible benefit.
+    let _handleRedrawQueued = false;
+    function queueRenderHandles() {
+        if (_handleRedrawQueued) return;
+        _handleRedrawQueued = true;
+        requestAnimationFrame(() => {
+            _handleRedrawQueued = false;
+            if (spotfinderActive && area && !dragState) renderHandles();
+        });
+    }
+    view.watch("extent", queueRenderHandles);
 
     // Initial UI sync (so the status tag has a class and the buttons
     // are in their disabled state from the first frame).
@@ -2169,6 +2793,23 @@ require([
         return `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
     }
 
+    /**
+     * Scale factor that shrinks the rotated thumbnail just enough so
+     * its corners stay inside the aspect-ratio'd container. For a
+     * square box, the worst case is 45°, where the rotated image
+     * needs to fit a 1/√2 ≈ 0.707 scale. We can't know the exact
+     * thumbnail+image aspect ratio at format time without extra
+     * layout work, so we approximate with the worst case — slightly
+     * conservative but never clips.
+     */
+    function _thumbnailFitScale(rotationDeg) {
+        const r = (rotationDeg * Math.PI / 180);
+        const c = Math.abs(Math.cos(r));
+        const s = Math.abs(Math.sin(r));
+        // sqrt(2)/2 at 45°, 1 at 0°/90°.
+        return 1 / (c + s);
+    }
+
 
     // ─── Layer builders ───────────────────────────────────
     // Bigger marker for higher score so the visual hierarchy matches
@@ -2186,15 +2827,82 @@ require([
         return { ...SPOT_SYMBOL_BASE, size: 8 + score * 8 };
     }
 
+    // Region overlay palette. One colour per class so the user can read
+    // the labelled-region map at a glance. Centerlines for linear
+    // classes use the same hue at higher opacity.
+    const CLASS_RGB = {
+        pinnacle: [255, 130,  90],
+        ridge:    [255, 200,  90],
+        ledge:    [255, 220, 130],
+        hole:     [120, 180, 255],
+        channel:  [ 90, 200, 255],
+        saddle:   [200, 140, 255],
+    };
+    function classFill(cls, score) {
+        const rgb = CLASS_RGB[cls] || [180, 180, 180];
+        const alpha = 0.10 + 0.18 * Math.max(0, Math.min(1, score));
+        return {
+            type: "simple-fill",
+            color: [rgb[0], rgb[1], rgb[2], alpha],
+            outline: {
+                color: [rgb[0], rgb[1], rgb[2], 0.95],
+                width: 1.4,
+                style: "solid",
+            },
+        };
+    }
+    function classCenterline(cls) {
+        const rgb = CLASS_RGB[cls] || [255, 255, 255];
+        return {
+            type: "simple-line",
+            color: [rgb[0], rgb[1], rgb[2], 0.95],
+            width: 2.6,
+            style: "solid",
+        };
+    }
+    const COMPOSITE_FILL_SYMBOL = {
+        type: "simple-fill",
+        color: [255, 215, 100, 0.06],
+        outline: {
+            color: [255, 215, 100, 0.95],
+            width: 2,
+            style: "short-dash",
+        },
+    };
+
     function buildHeatmapLayer(result) {
-        const b = result.heatmap_bounds;
+        // The PNG is oriented as if the rectangle were axis-aligned
+        // (the runner generates it in the rectangle's LOCAL frame —
+        // canvas top edge = rectangle top edge). To draw it rotated on
+        // the map we use ExtentAndRotationGeoreference, which:
+        //   1. places the image inside the supplied extent (un-rotated)
+        //   2. then rotates the placed image around its own centre.
+        //
+        // We work in Web Mercator metres so the extent's width/height
+        // can be derived directly from the SearchArea's true ground
+        // metres (Mercator stretches by 1/cos(lat); we undo that to
+        // convert ground metres → Mercator metres). Doing the same in
+        // WGS84 degrees would distort the aspect ratio at any
+        // significant latitude.
+        const area = result.search_area;
+        const c = SHAPE.project(area.center.lat, area.center.lng);
+        const scale = SHAPE.mercatorScaleAt(area.center.lat);
+        const hw = (area.width_m  / 2) / Math.max(1e-9, scale);
+        const hh = (area.height_m / 2) / Math.max(1e-9, scale);
         const extent = new Extent({
-            xmin: b.west, ymin: b.south, xmax: b.east, ymax: b.north,
-            spatialReference: { wkid: 4326 },
+            xmin: c.x - hw, ymin: c.y - hh,
+            xmax: c.x + hw, ymax: c.y + hh,
+            spatialReference: SpatialReference.WebMercator,
         });
         const elem = new ImageElement({
             image: result.heatmap_png_url,
-            georeference: new ExtentAndRotationGeoreference({ extent }),
+            georeference: new ExtentAndRotationGeoreference({
+                extent,
+                // ArcGIS's rotation is clockwise (positive) in screen
+                // orientation. Our rotation_deg is clockwise from
+                // north, which matches.
+                rotation: area.rotation_deg,
+            }),
         });
         return new MediaLayer({
             source: [elem],
@@ -2217,6 +2925,65 @@ require([
         return layer;
     }
 
+    // Region polygons + centerlines + composite hulls. Returns null if
+    // the result predates the labelled-region algorithm (old runs only
+    // carried `spots[]`); the caller skips adding a layer in that case
+    // so old saved runs render exactly as they did before.
+    function buildRegionsLayer(result) {
+        const regions = Array.isArray(result.regions) ? result.regions : [];
+        const composites = Array.isArray(result.composites) ? result.composites : [];
+        if (!regions.length && !composites.length) return null;
+        const layer = new GraphicsLayer({
+            listMode: "hide",
+            opacity:  globalOpacity,
+        });
+
+        // Composites first (bottom of the overlay stack) — their hulls
+        // are big and would otherwise hide the individual regions inside.
+        for (const c of composites) {
+            const ring = (c.polygon || []).map(p => [p.lng, p.lat]);
+            if (ring.length < 3) continue;
+            ring.push(ring[0]);
+            layer.add(new Graphic({
+                geometry: new Polygon({
+                    rings: [ring],
+                    spatialReference: { wkid: 4326 },
+                }),
+                symbol: COMPOSITE_FILL_SYMBOL,
+            }));
+        }
+
+        // Region polygons.
+        for (const r of regions) {
+            const poly = r.polygon || [];
+            if (poly.length < 3) continue;
+            const ring = poly.map(p => [p.lng, p.lat]);
+            ring.push(ring[0]);
+            layer.add(new Graphic({
+                geometry: new Polygon({
+                    rings: [ring],
+                    spatialReference: { wkid: 4326 },
+                }),
+                symbol: classFill(r.class, r.score),
+            }));
+        }
+
+        // Centerlines (ledges / ridges / channels). Drawn after polygons
+        // so the line crisply sits on top of the fill.
+        for (const r of regions) {
+            const line = r.centerline;
+            if (!Array.isArray(line) || line.length < 2) continue;
+            layer.add(new Graphic({
+                geometry: new Polyline({
+                    paths: [line.map(p => [p.lng, p.lat])],
+                    spatialReference: { wkid: 4326 },
+                }),
+                symbol: classCenterline(r.class),
+            }));
+        }
+        return layer;
+    }
+
 
     // ─── Activate / deactivate runs ───────────────────────
     //
@@ -2228,22 +2995,34 @@ require([
         const result = runs.get(runId);
         if (!result) return;
         const heatmapLayer = buildHeatmapLayer(result);
+        const regionsLayer = buildRegionsLayer(result);   // may be null for old runs
         const spotsLayer   = buildSpotsLayer(result);
         // Heatmaps stack just above the bathymetry tile layer (which lives
-        // at index 0). Spots go directly below markerLayer so they paint
-        // on top of every heatmap, regardless of activation order — the
-        // alternative (heatmap + spots inserted together at markerIdx)
-        // lets a later run's heatmap obscure an earlier run's spots.
+        // at index 0). Regions overlay sits above the heatmap. Spots go
+        // directly below markerLayer so they paint on top of every
+        // heatmap + regions overlay, regardless of activation order — the
+        // alternative (everything inserted together at markerIdx) lets a
+        // later run's heatmap obscure an earlier run's spots.
         map.layers.add(heatmapLayer, 1);
+        if (regionsLayer) map.layers.add(regionsLayer, 2);
         const markerIdx = map.layers.indexOf(markerLayer);
         const spotsIdx  = markerIdx >= 0 ? markerIdx : map.layers.length;
         map.layers.add(spotsLayer, spotsIdx);
-        runLayers.set(runId, { heatmapLayer, spotsLayer });
+        const layerSet = { heatmapLayer, regionsLayer, spotsLayer };
+        runLayers.set(runId, layerSet);
+        // Honor an already-active "hide overlay" toggle: activating a run
+        // while overlays are hidden should keep them hidden (otherwise the
+        // new run's heatmap pops in while every other run stays invisible,
+        // which reads as a bug).
+        applyOverlayVisibilityTo(layerSet);
     }
     function deactivateRun(runId) {
         const set = runLayers.get(runId);
         if (!set) return;
         if (map.layers.includes(set.heatmapLayer)) map.remove(set.heatmapLayer);
+        if (set.regionsLayer && map.layers.includes(set.regionsLayer)) {
+            map.remove(set.regionsLayer);
+        }
         if (map.layers.includes(set.spotsLayer))   map.remove(set.spotsLayer);
         runLayers.delete(runId);
     }
@@ -2262,14 +3041,84 @@ require([
         for (const id of next) activeIds.add(id);
         STORE.setActiveRunIds(Array.from(activeIds));
         updateSidebarButton();
+        updateOverlayToggleButton();
     }
 
     function setGlobalOpacity(value01) {
         globalOpacity = Math.max(0, Math.min(1, value01));
-        for (const { heatmapLayer } of runLayers.values()) {
+        for (const { heatmapLayer, regionsLayer } of runLayers.values()) {
             heatmapLayer.opacity = globalOpacity;
+            // Region outlines + centerlines + composite hulls fade with the
+            // heatmap so a "hide overlays" intent is one slider drag, not
+            // two. Spots stay at full opacity — they're the navigational
+            // anchor, not the overlay.
+            if (regionsLayer) regionsLayer.opacity = globalOpacity;
         }
         STORE.setGlobalOpacity(globalOpacity);
+    }
+
+
+    // ─── Overlay visibility toggle ─────────────────────────
+    //
+    // Quick on/off for the rendered Spotfinder output (heatmap + regions
+    // + centerlines + spots) without touching the active-runs set or the
+    // global opacity. The layers stay built — we just flip `.visible`,
+    // so toggling back on is instant. Session-only state (no storage):
+    // the spec is explicit that this is for in-session flipping, and
+    // persisting it would surprise a returning user who left it OFF
+    // and forgot.
+    //
+    // The button is hidden until at least one run is active; that's
+    // the "spotfinder display is enabled" signal the spec calls out.
+    // No active runs → nothing to toggle → no button.
+
+    const $overlayToggle = document.getElementById("sf-overlay-toggle-fab");
+    let overlayHidden = false;
+
+    function applyOverlayVisibilityTo(layerSet) {
+        if (!layerSet) return;
+        const visible = !overlayHidden;
+        layerSet.heatmapLayer.visible = visible;
+        if (layerSet.regionsLayer) layerSet.regionsLayer.visible = visible;
+        layerSet.spotsLayer.visible = visible;
+    }
+    function applyOverlayVisibility() {
+        for (const set of runLayers.values()) applyOverlayVisibilityTo(set);
+    }
+
+    function updateOverlayToggleButton() {
+        if (!$overlayToggle) return;
+        const anyActive = activeIds.size > 0;
+        if (!anyActive) {
+            // Reset to ON so the next activation isn't silently hidden —
+            // a user who toggled OFF, removed all runs, then activates a
+            // fresh one expects to see it (otherwise they'd think the
+            // run produced nothing).
+            overlayHidden = false;
+            $overlayToggle.classList.remove("overlay-off");
+            $overlayToggle.hidden = true;
+            return;
+        }
+        $overlayToggle.hidden = false;
+        $overlayToggle.classList.toggle("overlay-off", overlayHidden);
+        $overlayToggle.setAttribute("aria-pressed", overlayHidden ? "false" : "true");
+        $overlayToggle.setAttribute(
+            "aria-label",
+            overlayHidden ? "Show Spotfinder overlay" : "Hide Spotfinder overlay",
+        );
+        $overlayToggle.title =
+            overlayHidden ? "Show Spotfinder overlay" : "Hide Spotfinder overlay";
+    }
+
+    function toggleOverlayVisibility() {
+        if (activeIds.size === 0) return;   // defensive — button shouldn't be visible
+        overlayHidden = !overlayHidden;
+        applyOverlayVisibility();
+        updateOverlayToggleButton();
+    }
+
+    if ($overlayToggle) {
+        $overlayToggle.addEventListener("click", toggleOverlayVisibility);
     }
 
 
@@ -2418,12 +3267,25 @@ require([
             const spotCount = result.spots.length;
             const spotsTxt = `${spotCount} spot${spotCount === 1 ? "" : "s"}`;
 
+            // Thumbnail rotation: the heatmap PNG is stored in the
+            // rectangle's local (un-rotated) frame. Rotate the <img>
+            // by the same angle so the thumbnail visually matches the
+            // overlay the user will see on the map. We scale-down
+            // slightly so the rotated corners stay inside the
+            // aspect-ratio'd container at high rotation angles.
+            const rot = (result.search_area && result.search_area.rotation_deg) || 0;
+            const thumbScale = _thumbnailFitScale(rot);
+            const thumbStyle = rot
+                ? `transform: rotate(${rot}deg) scale(${thumbScale.toFixed(3)});`
+                : "";
+
             card.innerHTML = `
                 <div class="sf-run-card-thumb">
                     <img src="${escapeHtml(result.heatmap_png_url)}"
                          alt="Heatmap preview"
                          loading="lazy"
-                         draggable="false">
+                         draggable="false"
+                         style="${thumbStyle}">
                     <button class="sf-run-card-delete" type="button"
                             title="Delete this run" aria-label="Delete this run"
                             data-action="delete">×</button>

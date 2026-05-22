@@ -27,24 +27,24 @@
         </div>
         <div class="bbox-grid">
             <div class="bbox-cell">
-                <span class="bbox-cell-label">North</span>
-                <span class="bbox-cell-value" id="bbox-n">—</span>
+                <span class="bbox-cell-label">Center</span>
+                <span class="bbox-cell-value" id="area-center">—</span>
             </div>
             <div class="bbox-cell">
-                <span class="bbox-cell-label">South</span>
-                <span class="bbox-cell-value" id="bbox-s">—</span>
+                <span class="bbox-cell-label">Size</span>
+                <span class="bbox-cell-value" id="area-size">—</span>
             </div>
             <div class="bbox-cell">
-                <span class="bbox-cell-label">East</span>
-                <span class="bbox-cell-value" id="bbox-e">—</span>
+                <span class="bbox-cell-label">Rotation</span>
+                <span class="bbox-cell-value" id="area-rotation">—</span>
             </div>
             <div class="bbox-cell">
-                <span class="bbox-cell-label">West</span>
-                <span class="bbox-cell-value" id="bbox-w">—</span>
+                <span class="bbox-cell-label">Area</span>
+                <span class="bbox-cell-value" id="area-size-km2">—</span>
             </div>
         </div>
         <p class="spotfinder-card-hint" id="bbox-hint">
-            No bounding box was supplied. Return to the map and draw an area before running Spotfinder.
+            No search area was supplied. Return to the map and draw an area before running Spotfinder.
         </p>
     </section>
 
@@ -83,7 +83,10 @@
             <div class="sf-progress-track">
                 <div class="sf-progress-fill" id="sf-progress-fill" style="width: 0%"></div>
             </div>
-            <p class="spotfinder-card-hint">This will take a few seconds. Leave the tab open.</p>
+            <p class="spotfinder-card-hint">
+                <span id="sf-progress-eta">This will take a few seconds.</span>
+                Leave the tab open.
+            </p>
         </div>
 
         <!-- ERROR: surfaced when runSpotfinder rejects or storage fails. -->
@@ -143,6 +146,7 @@
     </div>
 </div>
 
+<script src="static/spotfinder-shape.js"></script>
 <script src="static/spotfinder-runner.js"></script>
 <script src="static/spotfinder-storage.js"></script>
 <script src="static/spotfinder.js"></script>
