@@ -202,6 +202,89 @@
     </aside>
     {% endfor %}
 
+    <!-- 3D inspector trigger. Sits directly above the Spotfinder FAB.
+         Styled like the neutral Overlay toggle (not the magical
+         Spotfinder gradient) — it's a regular tool, not a hero feature.
+         Click puts the map into a one-shot rectangle-draw mode; on
+         release the inspector modal opens with a 3D height-field
+         render of the selected area. -->
+    <button id="inspect3d-fab" class="inspect3d-fab" type="button"
+            aria-label="Open 3D inspector"
+            aria-haspopup="dialog"
+            aria-expanded="false">
+        <svg class="inspect3d-fab-icon" width="16" height="16"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+            <!-- Isometric cube -->
+            <path d="M12 2.5 21 7v10l-9 4.5L3 17V7z"/>
+            <path d="M3 7l9 4.5L21 7"/>
+            <path d="M12 11.5V21.5"/>
+        </svg>
+        <span class="inspect3d-fab-label">3D View</span>
+    </button>
+
+    <!-- 3D inspector modal. Hidden until the user finishes drawing a
+         rectangle, at which point inspector3d.js opens it with the
+         chosen bbox + current source/analysis. Close via X, ESC, or
+         backdrop click. -->
+    <div id="inspect3d-modal" class="inspect3d-modal hidden" aria-hidden="true">
+        <div class="inspect3d-backdrop" id="inspect3d-backdrop"></div>
+        <div class="inspect3d-card" role="dialog" aria-modal="true"
+             aria-labelledby="inspect3d-title">
+            <header class="inspect3d-header">
+                <div class="inspect3d-titles">
+                    <h2 id="inspect3d-title">3D Inspector</h2>
+                    <span class="inspect3d-extent" id="inspect3d-extent">—</span>
+                </div>
+                <button class="inspect3d-close" id="inspect3d-close"
+                        type="button" aria-label="Close 3D inspector">×</button>
+            </header>
+            <div class="inspect3d-body">
+                <div class="inspect3d-canvas-wrap" id="inspect3d-canvas-wrap">
+                    <div class="inspect3d-status" id="inspect3d-status">
+                        Loading high-resolution bathymetry…
+                    </div>
+                </div>
+                <aside class="inspect3d-controls">
+                    <div class="inspect3d-control">
+                        <div class="inspect3d-control-row">
+                            <label for="inspect3d-exag">Vertical exaggeration</label>
+                            <span class="inspect3d-control-value" id="inspect3d-exag-val">8×</span>
+                        </div>
+                        <input id="inspect3d-exag" type="range"
+                               min="1" max="30" step="1" value="8" class="slider">
+                        <p class="inspect3d-control-hint">Defaults higher than the 2D map — small areas have small relative relief.</p>
+                    </div>
+
+                    <div class="inspect3d-control">
+                        <div class="inspect3d-control-row">
+                            <label for="inspect3d-detail">Detail (vertex grid)</label>
+                            <span class="inspect3d-control-value" id="inspect3d-detail-val">384²</span>
+                        </div>
+                        <input id="inspect3d-detail" type="range"
+                               min="128" max="1024" step="32" value="384" class="slider">
+                        <p class="inspect3d-control-hint">More vertices = sharper relief, lower frame rate.</p>
+                    </div>
+
+                    <div class="inspect3d-control">
+                        <div class="inspect3d-control-row">
+                            <label for="inspect3d-light">Lighting angle</label>
+                            <span class="inspect3d-control-value" id="inspect3d-light-val">315°</span>
+                        </div>
+                        <input id="inspect3d-light" type="range"
+                               min="0" max="360" step="5" value="315" class="slider">
+                        <p class="inspect3d-control-hint">Azimuth of the directional light. 315° = top-left (NW).</p>
+                    </div>
+
+                    <div class="inspect3d-actions">
+                        <button class="ghost-btn" id="inspect3d-reset" type="button">Reset view</button>
+                    </div>
+                </aside>
+            </div>
+        </div>
+    </div>
+
     <!-- Spotfinder trigger. Bottom-left FAB that opens the Spotfinder
          panel. While the panel is open, the FAB is hidden; closing the
          panel restores it. -->
@@ -345,12 +428,30 @@
 
 </div>
 
+<!-- Three.js for the 3D inspector. Loaded BEFORE the ArcGIS API on
+     purpose: ArcGIS bundles Dojo's AMD loader, and Three.js's UMD
+     shim, on seeing AMD's `define()` available, tries to register
+     itself as an anonymous AMD module. Dojo rejects the second
+     anonymous define with `multipleDefine`, which breaks the whole
+     loader — `new EsriMap(...)` becomes "is not a constructor" and
+     the map area renders fully black. Loading Three.js first means
+     `define` isn't there yet, so the UMD falls through to the plain
+     browser-global branch and attaches to `window.THREE` cleanly.
+     Pinned to a version that still ships examples/js/* UMD. -->
+<script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://js.arcgis.com/4.26/"></script>
+<!-- The analyses module attaches FFAnalyses to `self`. In a Worker
+     that's the worker scope; in the page it's window. We need the
+     page-side copy so the 3D inspector can texture its surface with
+     the same algorithms the 2D map uses. -->
 <script>
     const map_layers = {{map_layers | tojson}};
 </script>
+<script src="static/analyses.js"></script>
 <script src="static/spotfinder-shape.js"></script>
 <script src="static/spotfinder-storage.js"></script>
+<script src="static/inspector3d.js"></script>
 <script src="static/map.js"></script>
 
 {% endblock %}

@@ -32,7 +32,11 @@ import flask.cli
 import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 
-from src.LayerGeneration import UNKNOWN_SOURCE, fetch_tile_raster
+from src.LayerGeneration import (
+    UNKNOWN_SOURCE,
+    fetch_bbox_raster,
+    fetch_tile_raster,
+)
 from src.basemap_sources import list_basemaps
 from src.data_sources import (
     DEFAULT_SOURCE_ID,
@@ -116,6 +120,55 @@ def serve_raster(source, resolution, z, x, y):
     return Response(header + body,
                     mimetype='application/octet-stream',
                     headers={'Cache-Control': 'public, max-age=86400',
+                             'Content-Length': str(len(header) + len(body))})
+
+
+# ---------------------------------------------------------------------------
+# Inspector raster route — one float32 grid for a user-defined bbox.
+#
+# Same wire format as /raster/<src>/<res>/{z}/{x}/{y}.bin (16-byte header
+# + body), but the bbox is arbitrary lon/lat rather than tile-aligned.
+# buffer_px is always 0 — the inspector doesn't run gradient analyses
+# across tile seams, so it doesn't need the edge overdraw.
+#
+# No caching (browser or disk): each rectangle is unique enough that a
+# cache hit is unlikely and the disk bloat would add up over a session
+# of exploring multiple areas.
+# ---------------------------------------------------------------------------
+
+@app.route('/raster/inspect')
+def serve_inspect_raster():
+    source = (request.args.get('source') or '').strip()
+    try:
+        north = float(request.args.get('n', ''))
+        south = float(request.args.get('s', ''))
+        east  = float(request.args.get('e', ''))
+        west  = float(request.args.get('w', ''))
+        size  = int(request.args.get('size', '512'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "missing or invalid query params"}), 400
+
+    if not (north > south and east > west):
+        return jsonify({"error": "invalid bbox"}), 400
+    # Size cap: 2048×2048 float32 = 16 MB per response, plenty of headroom
+    # for the highest realistic detail setting and still safe for memory.
+    if size < 64 or size > 2048:
+        return jsonify({"error": "size out of range (64..2048)"}), 400
+
+    result = fetch_bbox_raster(source, west, south, east, north, size)
+    if result is UNKNOWN_SOURCE:
+        return jsonify({"error": f"unknown source: {source}"}), 400
+    if result is None:
+        return ('', 503)
+
+    arr, cellsize_m = result
+    h, w = arr.shape
+    arr32 = np.ascontiguousarray(arr, dtype=np.float32)
+    header = struct.pack('<IIfI', w, h, float(cellsize_m), 0)
+    body = arr32.tobytes(order='C')
+    return Response(header + body,
+                    mimetype='application/octet-stream',
+                    headers={'Cache-Control': 'no-store',
                              'Content-Length': str(len(header) + len(body))})
 
 

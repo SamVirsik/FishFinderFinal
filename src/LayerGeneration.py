@@ -100,6 +100,14 @@ def _mercator_y_to_lat(y_merc: float) -> float:
     return math.degrees(math.atan(math.sinh(y_merc / _R)))
 
 
+def lonlat_to_mercator(lon: float, lat: float):
+    """Forward Web Mercator (lon, lat in degrees) → (x, y) in metres."""
+    lat_clamped = max(-85.0511, min(85.0511, lat))
+    x = math.radians(lon) * _R
+    y = _R * math.log(math.tan(math.pi / 4 + math.radians(lat_clamped) / 2))
+    return x, y
+
+
 def true_cellsize_m(bbox_mercator, fetch_size_px: int) -> float:
     """
     Real ground sample distance in metres/pixel for a tile.
@@ -284,3 +292,44 @@ def fetch_tile_raster(data_source: str, resolution: int,
 
     cellsize_m = true_cellsize_m(fetch_bbox, fetch_size)
     return arr, cellsize_m, BUFFER_PX
+
+
+# ---------------------------------------------------------------------------
+# Public: get a single float32 grid covering an arbitrary lon/lat bbox.
+#
+# Used by the 3D inspector. Unlike the XYZ tile path, this is a one-shot
+# request — no edge buffer (the inspector doesn't run gradient analyses
+# across tile seams), no disk cache (each user-drawn bbox is unique
+# enough that caching would just bloat the disk without ever hitting).
+# ---------------------------------------------------------------------------
+
+def fetch_bbox_raster(data_source: str,
+                      west: float, south: float, east: float, north: float,
+                      size_px: int):
+    """
+    Fetch one NxN float32 elevation grid covering the given lon/lat bbox.
+
+    Returns:
+        (arr, cellsize_m) on success.
+        UNKNOWN_SOURCE     if `data_source` is not in the registry.
+        None               on NOAA failure or decode failure.
+    """
+    source = get_source(data_source)
+    if source is None:
+        return UNKNOWN_SOURCE
+
+    xmin, ymin = lonlat_to_mercator(west, south)
+    xmax, ymax = lonlat_to_mercator(east, north)
+    if not (xmax > xmin and ymax > ymin):
+        return None
+    bbox_mercator = (xmin, ymin, xmax, ymax)
+
+    raw = _fetch_raster_bytes(source, bbox_mercator, size_px)
+    if raw is None:
+        return None
+    arr = _decode_raster(raw, size_px, source)
+    if arr is None:
+        return None
+
+    cellsize_m = true_cellsize_m(bbox_mercator, size_px)
+    return arr, cellsize_m

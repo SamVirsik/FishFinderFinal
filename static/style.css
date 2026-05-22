@@ -2178,3 +2178,283 @@ input, select {
 .depth-range-slider .depth-range-input::-moz-range-track {
     background: transparent;
 }
+
+
+/* ─── 3D Inspector ───────────────────────────────────────── */
+/* Trigger FAB. Sits directly above the Spotfinder FAB (offset by
+   roughly the Spotfinder FAB's height + a small gap). Styled to match
+   the neutral .sf-overlay-toggle-fab — a regular tool, not a hero
+   feature. */
+.inspect3d-fab {
+    position: fixed;
+    left: 16px;
+    bottom: 80px;       /* 28px (Spotfinder bottom) + 40px (height) + 12px gap */
+    z-index: 940;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px 10px 14px;
+    background: rgba(20, 22, 32, 0.88);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    transition: transform 120ms ease,
+                background 160ms ease,
+                box-shadow 160ms ease,
+                opacity 160ms ease;
+}
+
+.inspect3d-fab:hover {
+    transform: translateY(-1px);
+    background: rgba(28, 32, 46, 0.95);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+}
+
+.inspect3d-fab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.inspect3d-fab.active {
+    background: var(--accent-soft);
+    border-color: rgba(58, 163, 255, 0.55);
+    color: var(--accent-hover);
+}
+
+.inspect3d-fab.hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+}
+
+.inspect3d-fab-icon {
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+/* While draw mode is armed, the map cursor becomes a crosshair so the
+   user reads the intent clearly. */
+.workspace.inspect3d-drawing #map,
+.workspace.inspect3d-drawing #map canvas {
+    cursor: crosshair !important;
+}
+
+/* Live preview of the rectangle being drawn — a dashed outline owned
+   by inspector3d.js as a screen-space SVG overlay (so it's not coupled
+   to ArcGIS's render loop and stays smooth during fast drags). */
+.inspect3d-draw-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 945;
+    pointer-events: none;
+}
+.inspect3d-draw-overlay rect {
+    fill: rgba(58, 163, 255, 0.10);
+    stroke: rgba(58, 163, 255, 0.95);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+}
+
+.inspect3d-draw-hint {
+    position: fixed;
+    top: calc(var(--topbar-h) + 16px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 946;
+    padding: 8px 14px;
+    background: rgba(20, 22, 32, 0.92);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+}
+
+/* Toast for "rectangle too large" errors. Stays on screen for a few
+   seconds then fades out. */
+.inspect3d-toast {
+    position: fixed;
+    top: calc(var(--topbar-h) + 16px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1100;
+    padding: 10px 16px;
+    background: rgba(60, 18, 30, 0.95);
+    color: #ffe2ea;
+    border: 1px solid rgba(255, 77, 109, 0.55);
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 180ms ease;
+}
+.inspect3d-toast.visible { opacity: 1; }
+
+/* ─── Modal shell ─────────────────────────────────────── */
+.inspect3d-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.inspect3d-modal.hidden { display: none; }
+
+.inspect3d-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.inspect3d-card {
+    position: relative;
+    width: min(95vw, 1600px);
+    height: min(92vh, 1100px);
+    background: var(--bg-elev-solid);
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.inspect3d-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.inspect3d-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    min-width: 0;
+}
+.inspect3d-titles h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+}
+.inspect3d-extent {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.inspect3d-close {
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+}
+.inspect3d-close:hover {
+    background: var(--surface);
+    color: var(--text);
+}
+
+.inspect3d-body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+}
+
+.inspect3d-canvas-wrap {
+    flex: 1;
+    position: relative;
+    min-width: 0;
+    background:
+        radial-gradient(circle at 40% 30%, rgba(58, 163, 255, 0.08), transparent 60%),
+        #07080c;
+}
+.inspect3d-canvas-wrap canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.inspect3d-status {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--text-dim);
+    font-size: 13px;
+    text-align: center;
+    pointer-events: none;
+}
+.inspect3d-status.error { color: #ff8aa0; }
+.inspect3d-status.hidden { display: none; }
+
+.inspect3d-controls {
+    width: 280px;
+    flex-shrink: 0;
+    padding: 18px 16px;
+    border-left: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.22);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    overflow-y: auto;
+}
+
+.inspect3d-control { display: flex; flex-direction: column; gap: 8px; }
+.inspect3d-control-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+.inspect3d-control label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 0.01em;
+}
+.inspect3d-control-value {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+.inspect3d-control-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-faint);
+    line-height: 1.4;
+}
+
+.inspect3d-actions {
+    margin-top: auto;
+    display: flex;
+    gap: 8px;
+}

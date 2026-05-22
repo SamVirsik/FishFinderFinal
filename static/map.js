@@ -3650,4 +3650,71 @@ require([
         }
     }
     bootRunsPanel();
+
+
+    // ─── 3D Inspector wiring ──────────────────────────────────────
+    //
+    // inspector3d.js owns the modal, drag overlay, Three.js scene, and
+    // controls. It does NOT depend on the ArcGIS API directly — the
+    // page (this file) is the only piece that knows view.toMap, so we
+    // install a small host shim that converts a screen-pixel rectangle
+    // into a lat/lng bbox and routes the post-draw callback back into
+    // the inspector with the live (source, analysis, param) config.
+    //
+    // The FAB itself just enters draw mode; on release the host's
+    // onRectangleDrawn fires and we invoke inspector3d.open() with the
+    // bbox plus whatever the user currently has committed in the
+    // bathymetry layer controls.
+
+    const INSP = window.FishFinderInspector3D;
+    const $inspectFab = document.getElementById("inspect3d-fab");
+    if (INSP && $inspectFab) {
+        INSP.registerHost({
+            // Pixel rect → lat/lng bbox via view.toMap. The rect comes
+            // in as { x0, y0, x1, y1 } in viewport coordinates; we need
+            // map-container-relative coords for view.toMap, so subtract
+            // the map container's bounding rect.
+            screenRectToBbox: (rect) => {
+                const mapEl = document.getElementById("map");
+                if (!mapEl) return null;
+                const r = mapEl.getBoundingClientRect();
+                const local = {
+                    x0: rect.x0 - r.left, y0: rect.y0 - r.top,
+                    x1: rect.x1 - r.left, y1: rect.y1 - r.top,
+                };
+                const p0 = view.toMap({ x: local.x0, y: local.y0 });
+                const p1 = view.toMap({ x: local.x1, y: local.y1 });
+                if (!p0 || !p1
+                    || !Number.isFinite(p0.latitude)
+                    || !Number.isFinite(p1.latitude)) return null;
+                return {
+                    north: Math.max(p0.latitude,  p1.latitude),
+                    south: Math.min(p0.latitude,  p1.latitude),
+                    east:  Math.max(p0.longitude, p1.longitude),
+                    west:  Math.min(p0.longitude, p1.longitude),
+                };
+            },
+            onRectangleDrawn: (bbox) => {
+                // Read from `committed` — what the user is actually
+                // looking at right now. If draft has unsaved changes we
+                // honour the on-screen reality, not the pending edit,
+                // since that's what the user just visually framed.
+                INSP.open({
+                    bbox,
+                    sourceId:    committed.source,
+                    analysisKey: committed.analysis,
+                    param:       committed.param,
+                    paramExtra:  paramExtraFor(committed),
+                });
+            },
+        });
+
+        $inspectFab.addEventListener("click", () => {
+            // Exit competing modes: measure mode steals clicks; Spotfinder
+            // owns drag. Both would fight the inspector's pointer capture.
+            if (measureMode) setMeasureMode(false);
+            if (spotfinderActive) closeSpotfinderPanel();
+            INSP.startDrawMode();
+        });
+    }
 });
