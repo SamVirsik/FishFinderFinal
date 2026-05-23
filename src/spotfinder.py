@@ -204,6 +204,159 @@ DEFAULT_PARAMS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Environment modes — the "detection strictness" axis.
+#
+# The same bump that is a genuine spot over a featureless flat is just
+# background texture on a reef, so each mode overrides a SMALL, NAMED set of
+# DEFAULT_PARAMS rather than one magic number:
+#
+#   tpi_small/large_threshold_m : how far a cell must stand proud of its
+#       neighbourhood (metres) before it can be classed as structure — the
+#       single biggest strictness lever.
+#   score_threshold             : the floor a region's final score must clear
+#       to be surfaced at all.
+#   weight_local_percentile     : how heavily we reward "prominent vs the
+#       local neighbourhood" over raw relief. High on reefs (only the most
+#       prominent feature in a busy field survives); still meaningful on
+#       flats (a subtle bump is unusual against featureless ground). This is
+#       the term that normalises against local roughness so flat mode isn't
+#       just "return every bump".
+#   weight_relief               : how much raw vertical relief counts.
+#   local_window_factor         : size of the neighbourhood the percentile is
+#       measured against, as a multiple of the region bbox.
+#   relief_scale_m              : relief that reads as full-scale.
+#
+# To add a mode (drop-off, channel, grass flat, …) just add an entry here —
+# no other code changes. `param_overrides` may name ANY DEFAULT_PARAMS key.
+# The values below are deliberately conservative starting points; tune them
+# in place and re-run tools/spotfinder_smoke.py to eyeball the effect.
+# ---------------------------------------------------------------------------
+ENVIRONMENT_MODES = {
+    # Flat bottom: lower the bar, but stay smart. Everything around a feature
+    # is featureless, so subtle structure matters — we drop the prominence
+    # thresholds and lean on the local-percentile term so this isn't just
+    # "return every bump". Sits close to the legacy DEFAULT_PARAMS baseline,
+    # which is why legacy runs migrate to this mode (see spotfinder-storage).
+    "flat": {
+        "label": "Flat bottom",
+        "param_overrides": {
+            "tpi_small_threshold_m":   0.20,
+            "tpi_large_threshold_m":   0.40,
+            "score_threshold":         0.28,
+            "weight_local_percentile": 0.40,
+            "weight_relief":           0.15,
+            "local_window_factor":     6.0,
+            "relief_scale_m":          6.0,
+        },
+    },
+    # Reef: raise the bar. The seafloor is already textured, so a feature has
+    # to genuinely dominate its neighbourhood to count. Higher prominence
+    # thresholds, a higher score floor, more weight on local-percentile over
+    # a LARGER comparison window, and a larger relief scale so only real
+    # relief reads as full-scale.
+    "reef": {
+        "label": "Reef",
+        "param_overrides": {
+            "tpi_small_threshold_m":   0.45,
+            "tpi_large_threshold_m":   0.90,
+            "score_threshold":         0.42,
+            "weight_local_percentile": 0.45,
+            "weight_relief":           0.20,
+            "local_window_factor":     8.0,
+            "relief_scale_m":          14.0,
+        },
+    },
+}
+
+# Default environment when the client doesn't specify one. Reef is the
+# primary deployment target (the Florida Keys reef tract), so a user who
+# just hits Run gets the stricter, higher-confidence result set.
+DEFAULT_ENVIRONMENT = "reef"
+
+
+# ---------------------------------------------------------------------------
+# Structure types — the user-facing taxonomy, mapped onto the internal
+# per-pixel classes. Selecting a subset both (a) filters surfaced results to
+# those classes and (b) lets region extraction skip the unselected classes
+# entirely (free perf + avoids edge-case false positives — see
+# `_extract_regions`). Extensible: add an entry to expose a new class, or
+# point a new user-facing type at an existing class. The next iteration
+# (sizing / depth range / slope constraints / custom kernels) hangs off the
+# same `config` object this taxonomy lives in.
+# ---------------------------------------------------------------------------
+STRUCTURE_TYPES = {
+    "ledge":    {"label": "Ledge",        "classes": (CLASS_LEDGE,)},
+    # A mound / hump is a raised, broadly elongated feature; the internal
+    # `ridge` class (positive TPI + positive planform curvature) is the best
+    # available fit. Sharp, compact peaks are the separate `pinnacle` class.
+    "mound":    {"label": "Mound / hump", "classes": (CLASS_RIDGE,)},
+    "saddle":   {"label": "Saddle",       "classes": (CLASS_SADDLE,)},
+    "pinnacle": {"label": "Pinnacle",     "classes": (CLASS_PINNACLE,)},
+    "hole":     {"label": "Hole",         "classes": (CLASS_HOLE,)},
+    "channel":  {"label": "Channel",      "classes": (CLASS_CHANNEL,)},
+}
+# All types on by default so a user can hit Run without touching anything.
+DEFAULT_STRUCTURE_TYPES = tuple(STRUCTURE_TYPES.keys())
+
+
+def resolve_config(payload):
+    """Translate the client payload into the concrete run configuration.
+
+    Pure and side-effect-free (no NOAA, no globals mutated) so it can be
+    unit-tested directly. Returns a dict:
+
+        params           — DEFAULT_PARAMS + the environment's overrides +
+                           any explicit per-knob `params` (explicit wins, so
+                           a power user / future tuning UI can still override
+                           an individual threshold).
+        environment      — validated mode key (falls back to default).
+        structure_types  — validated user-facing type keys (always >= 1).
+        selected_classes — set of internal class ids to extract + surface.
+        source_id        — preferred data source id, or None for auto-resolve.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+    config = payload.get("config") or {}
+    if not isinstance(config, dict):
+        config = {}
+
+    # Environment → param overrides.
+    environment = config.get("environment")
+    if environment not in ENVIRONMENT_MODES:
+        environment = DEFAULT_ENVIRONMENT
+    params = dict(DEFAULT_PARAMS)
+    params.update(ENVIRONMENT_MODES[environment]["param_overrides"])
+    user_params = payload.get("params") or {}
+    if isinstance(user_params, dict):
+        params.update(user_params)
+
+    # Structure types → selected internal classes.
+    requested = config.get("structure_types")
+    if not isinstance(requested, (list, tuple)):
+        requested = []
+    structure_types = [t for t in requested if t in STRUCTURE_TYPES]
+    if not structure_types:
+        # Defensive: the UI enforces "at least one", but we must never
+        # silently surface nothing because of a malformed payload.
+        structure_types = list(DEFAULT_STRUCTURE_TYPES)
+    selected_classes = set()
+    for t in structure_types:
+        selected_classes.update(STRUCTURE_TYPES[t]["classes"])
+
+    source_id = config.get("source")
+    if not isinstance(source_id, str) or not source_id:
+        source_id = None
+
+    return {
+        "params":           params,
+        "environment":      environment,
+        "structure_types":  structure_types,
+        "selected_classes": selected_classes,
+        "source_id":        source_id,
+    }
+
+
 # Web Mercator constants — keep in sync with src/LayerGeneration.py and
 # static/spotfinder-shape.js.
 _R = 6378137.0
@@ -384,8 +537,37 @@ def _coverage_probe(source, area):
     return float(have_data.sum()) / rect_cells
 
 
-def _resolve_source(area, emit):
-    """Pick the highest-resolution source meeting the coverage threshold."""
+# Native posting (metres/pixel) keyed by source id, for the spot-finding
+# source table. Used to honour a client-requested source at the right
+# resolution without re-deriving it.
+_SPOTFINDER_NATIVE_RES = dict(SPOTFINDER_SOURCES)
+
+
+def _resolve_source(area, emit, preferred_source_id=None):
+    """Pick the data source for the run.
+
+    If the client passed a preferred source — the one active on the map when
+    the box was drawn — and it both exists in our spot-finding source table
+    AND clears the coverage threshold for this box, we honour it. The run
+    then reflects exactly what the user was looking at. Otherwise (no
+    request, an unsuitable source like the coarse global mosaics, or
+    insufficient coverage) we fall back to the highest-resolution source
+    that meets the coverage bar.
+    """
+    # 1. Honour the user's on-map source when it's viable here. Sources not
+    #    in SPOTFINDER_SOURCES (e.g. dem-global, far too coarse for
+    #    spot-finding) intentionally don't qualify and fall through to (2).
+    if preferred_source_id and preferred_source_id in _SPOTFINDER_NATIVE_RES:
+        source = get_source(preferred_source_id)
+        if source is not None:
+            emit(1.0, f"Checking your map source ({source.display_name})…")
+            coverage = _coverage_probe(source, area)
+            if coverage is not None and coverage >= COVERAGE_THRESHOLD:
+                return source, _SPOTFINDER_NATIVE_RES[preferred_source_id], coverage
+            emit(2.0, "Map source lacks coverage here — finding the best "
+                      "available…")
+
+    # 2. Auto-resolve: highest-resolution source meeting the threshold.
     pct_per_probe = 4.0 / max(1, len(SPOTFINDER_SOURCES))
     base_pct = 1.0
 
@@ -684,8 +866,14 @@ def _gen_id(prefix="rg-"):
     return prefix + uuid.uuid4().hex[:12]
 
 
-def _extract_regions(class_map, valid, params):
+def _extract_regions(class_map, valid, params, selected_classes=None):
     """Connected components per class, with closing + min-area filtering.
+
+    `selected_classes` (a set of internal class ids) restricts which classes
+    are extracted. Unselected classes are skipped entirely — this is the
+    structure-type filter: it's both free perf and avoids surfacing
+    edge-case false positives in a class the user didn't ask for. `None`
+    means "all surfaced classes" (back-compat for callers/tests).
 
     Each region carries:
         id, class_id, class, area_cells,
@@ -700,7 +888,9 @@ def _extract_regions(class_map, valid, params):
     structure = np.ones((3, 3), dtype=bool)
     regions = []
 
-    for cls in SURFACED_CLASSES:
+    classes = (SURFACED_CLASSES if selected_classes is None
+               else tuple(c for c in SURFACED_CLASSES if c in selected_classes))
+    for cls in classes:
         mask = (class_map == cls) & valid
         if not mask.any():
             continue
@@ -1307,14 +1497,16 @@ def run_spotfinder(payload):
                    "message": "invalid search_area in request"}
             return
 
-        params = dict(DEFAULT_PARAMS)
-        user_params = payload.get("params") or {}
-        if isinstance(user_params, dict):
-            params.update(user_params)
+        # Resolve the user-facing config (environment mode + structure types
+        # + preferred source) into concrete params, the set of classes to
+        # surface, and a source preference. See resolve_config().
+        cfg = resolve_config(payload)
+        params = cfg["params"]
+        selected_classes = cfg["selected_classes"]
 
-        yield progress(0.5, "Resolving best data source…")
-        emit(1.0, "Resolving best data source…")
-        source, native_res_m, coverage = _resolve_source(area, emit)
+        yield progress(0.5, "Resolving data source…")
+        source, native_res_m, coverage = _resolve_source(
+            area, emit, cfg["source_id"])
         for ev in flush():
             yield ev
         yield progress(8.0,
@@ -1355,7 +1547,7 @@ def run_spotfinder(payload):
         class_map = _classify(stack, valid_p, params)
 
         yield progress(65.0, "Extracting regions…")
-        regions = _extract_regions(class_map, valid_p, params)
+        regions = _extract_regions(class_map, valid_p, params, selected_classes)
 
         # ── Score (75 → 88 %) ──
         yield progress(76.0, "Scoring regions…")
@@ -1504,6 +1696,14 @@ def run_spotfinder(payload):
             "timestamp": _now_iso(),
             "search_area": area,
             "params":    params,
+            # The user-facing config this run was produced with. `source`
+            # is the source ACTUALLY used (after resolution / fallback), so
+            # the page reflects reality, not the request.
+            "config": {
+                "environment":     cfg["environment"],
+                "structure_types": list(cfg["structure_types"]),
+                "source":          source.id,
+            },
             "heatmap_png_url": heatmap_url,
             "heatmap_corners": [
                 {"lat": c["lat"], "lng": c["lng"]} for c in area["corners"]
@@ -1513,10 +1713,14 @@ def run_spotfinder(payload):
             "composites": composites_out,
             "manifest": {
                 "data_source":  source.display_name,
+                "source_id":    source.id,
                 "resolution_m": round(cellsize_m, 2),
                 "cell_count":   int(valid_p.sum()),
                 "runtime_ms":   int((time.monotonic() - t0) * 1000),
                 "rotation_deg": float(area["rotation_deg"]),
+                "environment":       cfg["environment"],
+                "environment_label": ENVIRONMENT_MODES[cfg["environment"]]["label"],
+                "structure_types":   list(cfg["structure_types"]),
             },
             # Backwards-compat fields the storage layer still mirrors.
             "bbox":           dict(area["bbox"]),

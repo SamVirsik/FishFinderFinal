@@ -2010,6 +2010,13 @@ require([
         } else {
             // "Start measuring" (no points) or "Add points" (extending).
             // Either way: enter mode without wiping the existing path.
+            // First exit the competing modes so their pointer capture and
+            // on-screen affordances don't fight the measure clicks — the
+            // same mutual exclusion the Spotfinder + 3D entry points apply.
+            if (spotfinderActive) closeSpotfinderPanel();
+            if (window.FishFinderInspector3D) {
+                window.FishFinderInspector3D.exitDrawMode();
+            }
             setMeasureMode(true);
         }
     });
@@ -2673,9 +2680,16 @@ require([
     }
 
     function openSpotfinderPanel() {
-        // Mutually exclusive with measure mode — would otherwise fight
-        // for the click/drag semantics.
+        // Mutually exclusive with the other map-interaction modes — they
+        // would otherwise fight for the click/drag semantics. Measure mode
+        // steals clicks; the 3D inspector's armed draw mode captures pointer
+        // events at the window level AND leaves its hint pill + crosshair
+        // on screen, so both must be torn down before Spotfinder takes over.
+        // (Mirrors the 3D FAB handler, which already closes Spotfinder.)
         if (measureMode) setMeasureMode(false);
+        if (window.FishFinderInspector3D) {
+            window.FishFinderInspector3D.exitDrawMode();
+        }
         spotfinderActive = true;
         $workspace.classList.add("spotfinder-active");
         $spotfinderPanel.classList.remove("collapsed");
@@ -2726,6 +2740,10 @@ require([
         enc.s = area.bbox.south.toFixed(6);
         enc.e = area.bbox.east.toFixed(6);
         enc.w = area.bbox.west.toFixed(6);
+        // Carry the source the user is currently looking at so the
+        // Spotfinder config page can default to it. Read `committed`
+        // (what's on screen now), not `draft` (a pending, unapplied edit).
+        if (committed && committed.source) enc.src = committed.source;
         const q = new URLSearchParams(enc);
         window.location.href = `/spotfinder?${q.toString()}`;
     });
@@ -2978,11 +2996,19 @@ require([
     const SPOT_SYMBOL_BASE = {
         type: "simple-marker",
         style: "circle",
-        color: [179, 136, 255, 0.92],
         outline: { color: [255, 255, 255, 0.95], width: 1.5 },
     };
-    function spotSymbol(score) {
-        return { ...SPOT_SYMBOL_BASE, size: 8 + score * 8 };
+    function spotSymbol(score, cls) {
+        // Colour the marker by class (CLASS_RGB, defined just below) so a
+        // dot reads the same as its region polygon and the on-map legend —
+        // one consistent colour per structure class. Unknown/legacy spots
+        // (no class) fall back to the original neutral purple.
+        const rgb = CLASS_RGB[cls] || [179, 136, 255];
+        return {
+            ...SPOT_SYMBOL_BASE,
+            color: [rgb[0], rgb[1], rgb[2], 0.92],
+            size: 8 + score * 8,
+        };
     }
 
     // Region overlay palette. One colour per class so the user can read
@@ -3077,7 +3103,8 @@ require([
                     latitude:  spot.lat,
                     spatialReference: { wkid: 4326 },
                 }),
-                symbol: spotSymbol(spot.score),
+                symbol: spotSymbol(spot.score,
+                                   spot.features && spot.features.class),
             }));
         }
         return layer;
@@ -3233,6 +3260,45 @@ require([
     const $overlayToggle = document.getElementById("sf-overlay-toggle-fab");
     let overlayHidden = false;
 
+    // ─── Map legend ────────────────────────────────────────
+    // A small key so the user never has to guess what a marker colour or a
+    // dashed hull means. Built once from CLASS_RGB (so it can't drift from
+    // the actual symbology) and shown whenever the overlay is visible.
+    const $legend = document.getElementById("sf-legend");
+    const CLASS_LEGEND = [
+        ["pinnacle", "Pinnacle"],
+        ["ridge",    "Mound / hump"],
+        ["ledge",    "Ledge"],
+        ["saddle",   "Saddle"],
+        ["hole",     "Hole"],
+        ["channel",  "Channel"],
+    ];
+    function buildLegend() {
+        if (!$legend || $legend.childElementCount) return;   // build once
+        const rows = ['<div class="sf-legend-title">Spotfinder spots</div>'];
+        for (const [cls, label] of CLASS_LEGEND) {
+            const rgb = CLASS_RGB[cls] || [180, 180, 180];
+            rows.push(
+                '<div class="sf-legend-row">'
+              + `<span class="sf-legend-dot" style="background:rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></span>`
+              + `<span class="sf-legend-label">${label}</span></div>`
+            );
+        }
+        // The dashed hull groups 2+ nearby high-scoring spots into one
+        // cluster — this row is what makes that outline self-explanatory.
+        rows.push(
+            '<div class="sf-legend-row">'
+          + '<span class="sf-legend-cluster"></span>'
+          + '<span class="sf-legend-label">Cluster of nearby spots</span></div>'
+        );
+        $legend.innerHTML = rows.join("");
+    }
+    function updateLegend() {
+        if (!$legend) return;
+        buildLegend();
+        $legend.hidden = !(activeIds.size > 0 && !overlayHidden);
+    }
+
     function applyOverlayVisibilityTo(layerSet) {
         if (!layerSet) return;
         const visible = !overlayHidden;
@@ -3255,6 +3321,7 @@ require([
             overlayHidden = false;
             $overlayToggle.classList.remove("overlay-off");
             $overlayToggle.hidden = true;
+            updateLegend();
             return;
         }
         $overlayToggle.hidden = false;
@@ -3266,6 +3333,7 @@ require([
         );
         $overlayToggle.title =
             overlayHidden ? "Show Spotfinder overlay" : "Hide Spotfinder overlay";
+        updateLegend();
     }
 
     function toggleOverlayVisibility() {

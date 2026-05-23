@@ -245,16 +245,46 @@
                     <div class="inspect3d-status" id="inspect3d-status">
                         Loading high-resolution bathymetry…
                     </div>
+                    <!-- Screen-space scale legend. Pinned to bottom-left of
+                         the viewport; inspector3d.js sizes the silhouette
+                         and bar each frame so their height matches 1.7 m
+                         projected at the terrain centroid. -->
+                    <div class="inspect3d-legend hidden" id="inspect3d-legend"
+                         aria-hidden="true">
+                        <div class="inspect3d-legend-graphic" id="inspect3d-legend-graphic">
+                            <svg class="inspect3d-legend-silhouette"
+                                 viewBox="0 0 16 64"
+                                 preserveAspectRatio="xMidYMid meet"
+                                 aria-hidden="true">
+                                <g fill="#edf1f7" stroke="#0d1117"
+                                   stroke-width="1.2" stroke-linejoin="round">
+                                    <circle cx="8" cy="5.5" r="4"/>
+                                    <path d="M3 11 L13 11 L13 30 L11 30 L10 60 L9 60 L8.5 38 L7.5 38 L7 60 L6 60 L5 30 L3 30 Z"/>
+                                </g>
+                            </svg>
+                            <div class="inspect3d-legend-bar" aria-hidden="true">
+                                <span class="inspect3d-legend-tick inspect3d-legend-tick-top"></span>
+                                <span class="inspect3d-legend-tick inspect3d-legend-tick-bot"></span>
+                            </div>
+                        </div>
+                        <div class="inspect3d-legend-label"
+                             id="inspect3d-legend-label">1.7 m · 5'7" @ 1×</div>
+                    </div>
                 </div>
                 <aside class="inspect3d-controls">
                     <div class="inspect3d-control">
                         <div class="inspect3d-control-row">
                             <label for="inspect3d-exag">Vertical exaggeration</label>
-                            <span class="inspect3d-control-value" id="inspect3d-exag-val">8×</span>
+                            <span class="inspect3d-control-meta">
+                                <button class="inspect3d-auto-btn active" id="inspect3d-auto-btn"
+                                        type="button"
+                                        title="Auto-fit so the relief reads as ~25% of the rectangle width">Auto</button>
+                                <span class="inspect3d-control-value" id="inspect3d-exag-val">15×</span>
+                            </span>
                         </div>
                         <input id="inspect3d-exag" type="range"
-                               min="1" max="30" step="1" value="8" class="slider">
-                        <p class="inspect3d-control-hint">Defaults higher than the 2D map — small areas have small relative relief.</p>
+                               min="1" max="100" step="1" value="15" class="slider">
+                        <p class="inspect3d-control-hint">Auto fits the relief to a visible height. Drag the slider to override; click Auto to re-fit.</p>
                     </div>
 
                     <div class="inspect3d-control">
@@ -275,6 +305,14 @@
                         <input id="inspect3d-light" type="range"
                                min="0" max="360" step="5" value="315" class="slider">
                         <p class="inspect3d-control-hint">Azimuth of the directional light. 315° = top-left (NW).</p>
+                    </div>
+
+                    <div class="inspect3d-control inspect3d-toggle">
+                        <label class="inspect3d-toggle-label">
+                            <input id="inspect3d-show-figure" type="checkbox" checked>
+                            <span>Show scale figure (1.7 m)</span>
+                        </label>
+                        <p class="inspect3d-control-hint">On-screen reference for 1.7 m of real height at the current zoom and vertical exaggeration. Compare directly against contour features.</p>
                     </div>
 
                     <div class="inspect3d-actions">
@@ -327,6 +365,13 @@
         </svg>
         <span class="sf-overlay-toggle-label">Overlay</span>
     </button>
+
+    <!-- Spotfinder map legend. Populated by map.js from CLASS_RGB so the
+         swatches always match the markers + polygons. Shown only while at
+         least one run is active (same signal as the overlay toggle), and
+         hidden when the overlay is toggled off. The "cluster" row explains
+         the dashed hulls that group nearby spots. -->
+    <div id="sf-legend" class="sf-legend" hidden aria-label="Spotfinder legend"></div>
 
     <aside id="spotfinder-panel" class="spotfinder-panel collapsed"
            role="dialog" aria-label="Spotfinder">

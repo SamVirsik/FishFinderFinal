@@ -76,6 +76,21 @@
         if (!run.heatmap_bounds && run.search_area) {
             run.heatmap_bounds = { ...run.search_area.bbox };
         }
+        // Runs saved before the configurable-algorithm rework have no
+        // `config`. They were produced by the old, more permissive
+        // thresholds (closest to the new "flat bottom" mode) over all
+        // classes, so migrate them to that — and flag them `legacy: true`
+        // so the UI can mark them and so we never imply they were run with
+        // settings that didn't exist yet. Read-time only (not re-saved),
+        // matching the bbox migration above.
+        if (!run.config) {
+            run.config = {
+                environment: "flat",
+                structure_types: ["pinnacle", "mound", "ledge",
+                                  "saddle", "hole", "channel"],
+                legacy: true,
+            };
+        }
         return run;
     }
 

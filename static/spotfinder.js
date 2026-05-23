@@ -53,6 +53,163 @@
     const params = new URLSearchParams(window.location.search);
     const searchArea = SHAPE.decodeFromUrl(params);
 
+
+    // ─── Algorithm configuration ───────────────────────────
+    // SF_CONFIG is the single client-side source of truth for the two
+    // configuration axes; it mirrors ENVIRONMENT_MODES / STRUCTURE_TYPES in
+    // src/spotfinder.py. To add a mode or structure type, add a row here
+    // and the matching backend entry — nothing else on this page changes.
+    // Structure colours match CLASS_RGB in static/map.js so the chips on
+    // this page read the same as the markers + polygons on the map.
+    const SF_CONFIG = {
+        environments: [
+            { key: "reef", label: "Reef", default: true,
+              hint: "Stricter. The reef floor is already textured, so only "
+                  + "features that clearly dominate their surroundings count." },
+            { key: "flat", label: "Flat bottom",
+              hint: "Looser. Surfaces subtle structure that stands out "
+                  + "against otherwise featureless ground." },
+        ],
+        // key must match a STRUCTURE_TYPES key on the backend.
+        structures: [
+            { key: "pinnacle", label: "Pinnacle",     color: "rgb(255,130,90)" },
+            { key: "mound",    label: "Mound / hump", color: "rgb(255,200,90)" },
+            { key: "ledge",    label: "Ledge",        color: "rgb(255,220,130)" },
+            { key: "saddle",   label: "Saddle",       color: "rgb(200,140,255)" },
+            { key: "hole",     label: "Hole",         color: "rgb(120,180,255)" },
+            { key: "channel",  label: "Channel",      color: "rgb(90,200,255)" },
+        ],
+    };
+
+    const $cfgSource     = document.getElementById("sf-cfg-source");
+    const $cfgSourceHint = document.getElementById("sf-cfg-source-hint");
+    const $cfgEnv        = document.getElementById("sf-cfg-environment");
+    const $cfgEnvHint    = document.getElementById("sf-cfg-environment-hint");
+    const $cfgStructs    = document.getElementById("sf-cfg-structures");
+    const $cfgStructHint = document.getElementById("sf-cfg-structures-hint");
+    const $cfgTag        = document.getElementById("sf-cfg-tag");
+
+    // The source the user had active on the map, carried in the URL.
+    const requestedSource = params.get("src");
+
+    // Environment dropdown.
+    for (const e of SF_CONFIG.environments) {
+        const opt = document.createElement("option");
+        opt.value = e.key;
+        opt.textContent = e.label;
+        if (e.default) opt.selected = true;
+        $cfgEnv.appendChild(opt);
+    }
+    function syncEnvHint() {
+        const e = SF_CONFIG.environments.find(x => x.key === $cfgEnv.value);
+        $cfgEnvHint.textContent = e ? e.hint : "";
+    }
+
+    // Structure-type checkboxes — all on by default.
+    for (const s of SF_CONFIG.structures) {
+        const label = document.createElement("label");
+        label.className = "sf-check checked";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = s.key;
+        cb.checked = true;
+        const dot = document.createElement("span");
+        dot.className = "sf-check-dot";
+        dot.style.background = s.color;
+        const text = document.createElement("span");
+        text.className = "sf-check-text";
+        text.textContent = s.label;
+        label.append(cb, dot, text);
+        $cfgStructs.appendChild(label);
+    }
+    function selectedStructures() {
+        return Array.from($cfgStructs.querySelectorAll("input:checked"))
+                    .map(c => c.value);
+    }
+    function syncStructuresValidity() {
+        const n = selectedStructures().length;
+        for (const lbl of $cfgStructs.querySelectorAll(".sf-check")) {
+            lbl.classList.toggle("checked", lbl.querySelector("input").checked);
+        }
+        if (n === 0) {
+            $cfgStructHint.textContent =
+                "Select at least one structure type to run.";
+            $cfgStructHint.classList.add("sf-hint-warn");
+        } else {
+            $cfgStructHint.textContent =
+                "Results are limited to the structure types you select. "
+              + "At least one is required.";
+            $cfgStructHint.classList.remove("sf-hint-warn");
+        }
+    }
+    function syncCfgTag() {
+        const e = SF_CONFIG.environments.find(x => x.key === $cfgEnv.value);
+        const n = selectedStructures().length;
+        $cfgTag.textContent = `${e ? e.label : "—"} · ${n} type${n === 1 ? "" : "s"}`;
+        $cfgTag.classList.remove("muted");
+    }
+
+    $cfgEnv.addEventListener("change", () => { syncEnvHint(); syncCfgTag(); });
+    $cfgStructs.addEventListener("change", () => {
+        syncStructuresValidity();
+        syncCfgTag();
+        updateRunGate();
+    });
+
+    // Source dropdown — populated from /sources (same registry the map
+    // dropdown uses), with the map's active source preselected.
+    fetch("/sources", { cache: "no-store" })
+        .then(r => r.ok ? r.json()
+                        : Promise.reject(new Error(`/sources HTTP ${r.status}`)))
+        .then((payload) => {
+            const list = payload.sources || [];
+            $cfgSource.innerHTML = "";
+            const auto = document.createElement("option");
+            auto.value = "";
+            auto.textContent = "Auto — best available coverage";
+            $cfgSource.appendChild(auto);
+            for (const s of list) {
+                const opt = document.createElement("option");
+                opt.value = s.id;
+                opt.textContent = s.experimental
+                    ? `${s.display_name} (experimental)` : s.display_name;
+                if (s.notes) opt.title = s.notes;
+                $cfgSource.appendChild(opt);
+            }
+            if (requestedSource && list.some(s => s.id === requestedSource)) {
+                $cfgSource.value = requestedSource;
+                $cfgSourceHint.textContent =
+                    "Using the source you had active on the map. "
+                  + "Change it if you like.";
+            } else if (payload.default && list.some(s => s.id === payload.default)) {
+                $cfgSource.value = payload.default;
+            } else {
+                $cfgSource.value = "";
+            }
+        })
+        .catch((err) => {
+            console.warn("[spotfinder] failed to load /sources:", err);
+            $cfgSource.innerHTML =
+                '<option value="" selected>Auto — best available coverage</option>';
+            $cfgSourceHint.textContent =
+                "Couldn't load the source list — Spotfinder will auto-pick.";
+        });
+
+    function readConfig() {
+        return {
+            environment:     $cfgEnv.value,
+            structure_types: selectedStructures(),
+            source:          $cfgSource.value || null,
+        };
+    }
+    function canRun() {
+        return !!searchArea && selectedStructures().length > 0;
+    }
+
+    syncEnvHint();
+    syncStructuresValidity();
+    syncCfgTag();
+
     function fmtLatLng(lat, lng) {
         const ns = lat >= 0 ? "N" : "S";
         const ew = lng >= 0 ? "E" : "W";
@@ -84,7 +241,7 @@
         $tag.classList.add("ok");
         $hint.textContent =
             "Press Run Spotfinder to analyse this area. Results will save automatically.";
-        $run.disabled = false;
+        $run.disabled = !canRun();
         $run.removeAttribute("aria-disabled");
         $run.removeAttribute("title");
     } else {
@@ -129,7 +286,7 @@
     let inFlight   = false;
 
     function setRunButton(running) {
-        $run.disabled = running || !searchArea;
+        $run.disabled = running || !canRun();
         $rerun.disabled = running;
         if (running) {
             $run.classList.add("pending");
@@ -138,6 +295,13 @@
             $run.classList.remove("pending");
             $runLabel.textContent = currentRun ? "Run again" : "Run Spotfinder";
         }
+    }
+
+    // Re-evaluate the Run gate after a config change (e.g. all structure
+    // types deselected → Run disabled). No-op mid-run so we don't re-enable
+    // the button while a run is in flight.
+    function updateRunGate() {
+        if (!inFlight) setRunButton(false);
     }
 
     function fmtRemaining(ms) {
@@ -179,7 +343,10 @@
         onProgress(0, "Starting…");
         try {
             const result = await window.FishFinderSpotfinder.run(
-                { search_area: searchArea, params: {} },   // params reserved for the future tuning UI
+                // `config` carries the user-facing axes (environment +
+                // structure types + source). `params` stays the low-level
+                // per-knob override channel for a future tuning UI.
+                { search_area: searchArea, params: {}, config: readConfig() },
                 onProgress,
             );
             // Persist before painting results so a refresh during the

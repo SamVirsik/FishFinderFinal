@@ -1069,6 +1069,66 @@ input, select {
     color: var(--text-dim);
 }
 
+/* Spotfinder map legend. Bottom-left card sitting just above the FAB row.
+   Shown only while the overlay is visible (map.js toggles [hidden]). Makes
+   every marker colour + the dashed cluster hull self-explanatory. */
+.sf-legend {
+    position: fixed;
+    left: 16px;
+    bottom: 82px;
+    z-index: 939;
+    min-width: 168px;
+    padding: 12px 14px;
+    background: rgba(20, 22, 32, 0.88);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    font-size: 12px;
+    color: var(--text);
+}
+
+.sf-legend[hidden] { display: none; }
+
+.sf-legend-title {
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
+.sf-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+}
+
+.sf-legend-dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+/* Matches COMPOSITE_FILL_SYMBOL in map.js — yellow short-dash. */
+.sf-legend-cluster {
+    width: 13px;
+    height: 9px;
+    flex-shrink: 0;
+    border: 1.5px dashed rgb(255, 215, 100);
+    border-radius: 2px;
+}
+
+.sf-legend-label {
+    color: var(--text);
+    line-height: 1.3;
+}
+
 /* Eyebrow chip — appears above the panel heading and the page title.
    Mirrors the FAB accent so the user sees the same visual signature. */
 .spotfinder-eyebrow {
@@ -1342,6 +1402,81 @@ input, select {
 
 .spotfinder-placeholder p {
     margin: 0;
+}
+
+/* Algorithm-configuration panel. Two-column field grid; the structure-type
+   checkbox group spans the full width below. Reuses .select / .field-label /
+   .field-hint from the shared form vocabulary. */
+.sf-config {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px 18px;
+}
+
+.sf-config-field {
+    min-width: 0;
+}
+
+.sf-config-field-wide {
+    grid-column: 1 / -1;
+}
+
+.sf-config .field-hint.sf-hint-warn {
+    color: var(--accent);
+}
+
+/* Structure-type chips — themed checkboxes. The dot mirrors the per-class
+   marker colour on the map so selection reads the same in both places. */
+.sf-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.sf-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.sf-check:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.sf-check input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.sf-check.checked {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.sf-check-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+@media (max-width: 700px) {
+    .sf-config {
+        grid-template-columns: 1fr;
+    }
 }
 
 .spotfinder-run-row {
@@ -2246,9 +2381,10 @@ input, select {
     cursor: crosshair !important;
 }
 
-/* Live preview of the rectangle being drawn — a dashed outline owned
+/* Live preview of the rectangle being drawn — a solid outline owned
    by inspector3d.js as a screen-space SVG overlay (so it's not coupled
-   to ArcGIS's render loop and stays smooth during fast drags). */
+   to ArcGIS's render loop and stays smooth during fast drags). Matches
+   the visual language of the committed selection rectangle. */
 .inspect3d-draw-overlay {
     position: fixed;
     inset: 0;
@@ -2256,11 +2392,33 @@ input, select {
     pointer-events: none;
 }
 .inspect3d-draw-overlay rect {
-    fill: rgba(58, 163, 255, 0.10);
-    stroke: rgba(58, 163, 255, 0.95);
-    stroke-width: 1.5;
-    stroke-dasharray: 6 4;
+    fill: rgba(58, 163, 255, 0.12);
+    stroke: var(--accent);
+    stroke-width: 2;
 }
+
+/* Floating dimensions readout shown beside the cursor while the user is
+   dragging out a rectangle. inspector3d.js positions it via inline
+   left/top and toggles .visible. */
+.inspect3d-draw-dim {
+    position: fixed;
+    z-index: 946;
+    padding: 4px 8px;
+    background: rgba(7, 8, 12, 0.88);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transition: opacity 80ms ease;
+}
+.inspect3d-draw-dim.visible { opacity: 1; }
 
 .inspect3d-draw-hint {
     position: fixed;
@@ -2393,9 +2551,7 @@ input, select {
     flex: 1;
     position: relative;
     min-width: 0;
-    background:
-        radial-gradient(circle at 40% 30%, rgba(58, 163, 255, 0.08), transparent 60%),
-        #07080c;
+    background: #07080c;
 }
 .inspect3d-canvas-wrap canvas {
     display: block;
@@ -2446,6 +2602,34 @@ input, select {
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
 }
+.inspect3d-control-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.inspect3d-auto-btn {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--text-dim);
+    line-height: 1.4;
+    transition: background 140ms ease, color 140ms ease,
+                border-color 140ms ease;
+}
+.inspect3d-auto-btn:hover {
+    color: var(--text);
+    border-color: var(--text-dim);
+}
+.inspect3d-auto-btn.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent);
+}
 .inspect3d-control-hint {
     margin: 0;
     font-size: 11px;
@@ -2453,8 +2637,98 @@ input, select {
     line-height: 1.4;
 }
 
+.inspect3d-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 0.01em;
+    user-select: none;
+}
+.inspect3d-toggle-label input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    accent-color: #6bb7ea;
+    margin: 0;
+}
+
 .inspect3d-actions {
     margin-top: auto;
     display: flex;
     gap: 8px;
+}
+
+/* ─── Scale legend (screen-space overlay) ──────────────────
+   Pinned to the bottom-left corner of the 3D viewport. Sized by
+   inspector3d.js so the silhouette + bar match 1.7 m projected at
+   the terrain centroid for the current camera + exaggeration.       */
+.inspect3d-legend {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    z-index: 5;
+    padding: 8px 10px 6px;
+    background: rgba(7, 8, 12, 0.62);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+    user-select: none;
+    /* Allow the JS-driven graphic height to overflow the rounded box
+       gracefully when it is large — but cap the box visually via the
+       graphic itself which is clamped to 70% viewport height. */
+    max-width: 50%;
+}
+.inspect3d-legend.hidden { display: none; }
+
+.inspect3d-legend-graphic {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    /* height is set inline by JS each frame */
+}
+
+.inspect3d-legend-silhouette {
+    height: 100%;
+    width: auto;
+    display: block;
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.55));
+}
+
+.inspect3d-legend-bar {
+    position: relative;
+    width: 2px;
+    background: #edf1f7;
+    box-shadow: 0 0 2px rgba(0, 0, 0, 0.55);
+    align-self: stretch;
+}
+
+.inspect3d-legend-tick {
+    position: absolute;
+    left: -3px;
+    width: 8px;
+    height: 2px;
+    background: #edf1f7;
+}
+.inspect3d-legend-tick-top { top: 0; }
+.inspect3d-legend-tick-bot { bottom: 0; }
+
+.inspect3d-legend-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #edf1f7;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+    white-space: nowrap;
 }

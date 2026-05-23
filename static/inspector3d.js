@@ -43,8 +43,32 @@
     const DEFAULT_FETCH_SIZE  = 512;     // NxN raster resolution
     const MAX_FETCH_SIZE      = 1024;    // server cap is 2048; we stop earlier
     const DEFAULT_DETAIL      = 384;     // vertex grid per side
-    const DEFAULT_EXAGGERATION = 8;      // higher than 2D map default
+    const DEFAULT_EXAGGERATION = 15;     // start dramatic; small areas need it
+    const MAX_EXAGGERATION    = 100;
+    const AUTO_TARGET_FRACTION = 0.25;   // terrain Y range as fraction of max(W,H)
     const DEFAULT_LIGHT_DEG   = 315;     // azimuth (0 = N, 90 = E, 315 = NW)
+
+    // Skirt (the wall that turns the height-field into a solid block).
+    const SKIRT_PAD_FRACTION  = 0.10;    // base plane below deepest point
+    const SKIRT_COLOR         = 0x2c3038;
+
+    // Depth axis (the depth ruler at the NW corner).
+    const AXIS_COLOR          = 0x9eb6d0;
+
+    // Default framing — camera orbits the geometry centre at this
+    // azimuth/elevation, distance computed to fit the bounding sphere.
+    const FRAME_AZIMUTH_DEG   = 35;      // 0 = look along -Z (north), positive = swing east
+    const FRAME_ELEVATION_DEG = 30;      // above the horizon
+    const FRAME_PADDING       = 1.15;    // ~15% margin around the bounding sphere
+
+    // Real-world human height used by the on-screen scale legend.
+    const FIGURE_HEIGHT_M     = 1.7;
+
+    // Pixel-height clamps for the scale legend. Below the min it
+    // disappears against the terrain; above the max it dominates the
+    // viewport. When clamped at the max we annotate the label.
+    const LEGEND_MIN_PX       = 12;
+    const LEGEND_MAX_VH_FRAC  = 0.70;
 
     // Maximum area the user can draw. Past this we show a warning and
     // refuse — 3D detail is the point, so keep the rectangle small.
@@ -56,6 +80,7 @@
     let drawState = null;                 // active drag: { x0, y0, x1, y1 }
     let drawOverlaySvg = null;            // SVG live preview
     let drawHintEl = null;                // top-of-screen hint pill
+    let drawDimEl = null;                 // floating cursor-anchored dimensions badge
 
     // Open-modal session state. Null when the modal is closed.
     //
@@ -63,10 +88,17 @@
     //   bbox, sourceId, analysisKey, param, paramExtra,
     //   raster:      { w, h, cellsize_m, data: Float32Array },
     //   detail, exaggeration, lightDeg, fetchSize,
+    //   autoMode,               // true = exag is auto-computed each VE update
     //   widthM, heightM,        // bbox dimensions in true ground metres
+    //   terrainMinElevM, terrainMaxElevM,  // raster z extremes (unexag, m)
+    //   baseY,                  // scene-Y of the skirt's bottom plane
     //   renderer, scene, camera, controls,
     //   mesh, geometry, material, texture,
+    //   skirt, skirtGeom, skirtMat,  // dark walls + bottom cap
+    //   axis,                    // Group: depth ruler line + sprite labels
     //   light, ambient,
+    //   showFigure,             // toggle state for the screen-space legend
+    //   legendEl, legendGraphicEl, legendLabelEl,  // DOM nodes
     //   raf,                    // current animation frame id
     //   onResize,               // bound resize handler
     // }
@@ -104,6 +136,10 @@
         drawHintEl.textContent =
             "Click and drag to define the 3D inspection area. ESC to cancel.";
         document.body.appendChild(drawHintEl);
+
+        drawDimEl = document.createElement("div");
+        drawDimEl.className = "inspect3d-draw-dim";
+        document.body.appendChild(drawDimEl);
     }
 
     function removeDrawOverlay() {
@@ -115,6 +151,20 @@
             drawHintEl.remove();
             drawHintEl = null;
         }
+        if (drawDimEl) {
+            drawDimEl.remove();
+            drawDimEl = null;
+        }
+    }
+
+    // Format a metres distance as "420 m" or "1.2 km" depending on
+    // magnitude. Same rounding policy as fmtKm but a hair tighter on
+    // the sub-1 km boundary for readability while dragging.
+    function fmtDragDist(m) {
+        if (!Number.isFinite(m) || m < 0) return "—";
+        if (m < 1000) return `${Math.round(m / 5) * 5} m`;
+        if (m < 10000) return `${(m / 1000).toFixed(2)} km`;
+        return `${(m / 1000).toFixed(1)} km`;
     }
 
     function updateDrawOverlay() {
@@ -123,6 +173,7 @@
         if (!drawState) {
             rect.setAttribute("width", "0");
             rect.setAttribute("height", "0");
+            if (drawDimEl) drawDimEl.classList.remove("visible");
             return;
         }
         const { x0, y0, x1, y1 } = drawState;
@@ -134,6 +185,46 @@
         rect.setAttribute("y", y);
         rect.setAttribute("width", w);
         rect.setAttribute("height", h);
+
+        // Live dimensions readout, anchored to the cursor (the moving
+        // corner of the drag). Convert the screen rect to a lat/lng
+        // bbox via the host hook, then to true-ground metres.
+        if (!drawDimEl) return;
+        if (w < 4 || h < 4) {
+            drawDimEl.classList.remove("visible");
+            return;
+        }
+        let widthM = NaN, heightM = NaN;
+        if (host && typeof host.screenRectToBbox === "function") {
+            const bbox = host.screenRectToBbox(drawState);
+            if (bbox) {
+                const m = bboxToMetres(bbox);
+                widthM = m.widthM;
+                heightM = m.heightM;
+            }
+        }
+        if (!Number.isFinite(widthM) || !Number.isFinite(heightM)) {
+            drawDimEl.classList.remove("visible");
+            return;
+        }
+        drawDimEl.textContent =
+            `${fmtDragDist(widthM)} × ${fmtDragDist(heightM)}`;
+        // Anchor near the moving corner with a small offset so the badge
+        // doesn't sit underneath the cursor. Flip to the left/above when
+        // it would otherwise spill off the viewport edge.
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        // Measure once so the flip math knows the badge dimensions.
+        drawDimEl.classList.add("visible");
+        const bw = drawDimEl.offsetWidth || 80;
+        const bh = drawDimEl.offsetHeight || 24;
+        const offset = 14;
+        let bx = x1 + offset;
+        let by = y1 + offset;
+        if (bx + bw > vw - 4) bx = x1 - offset - bw;
+        if (by + bh > vh - 4) by = y1 - offset - bh;
+        drawDimEl.style.left = `${Math.max(4, bx)}px`;
+        drawDimEl.style.top  = `${Math.max(4, by)}px`;
     }
 
 
@@ -240,20 +331,16 @@
             }
         }
 
-        // Three.js textures expect Y up by default (the bottom row of
-        // the image is at v=0). Our raster is row-major top-to-bottom
-        // (north at row 0), so we flip vertically here once at bake time
-        // rather than depending on texture.flipY (which doesn't reliably
-        // re-flip after the canvas is drawn).
+        // Build the texture canvas as-drawn (raster row 0 = north at the
+        // top). Three.js samples textures with v=0 at the bottom, so the
+        // north/south orientation is corrected downstream by texture.flipY
+        // in setupMesh — we deliberately do NOT pre-flip the pixels here.
         const canvas = document.createElement("canvas");
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext("2d");
         const img = new ImageData(rgba, w, h);
         ctx.putImageData(img, 0, 0);
-        // Flip vertically by drawing the canvas onto itself with
-        // transform. Cheaper than another temp canvas allocation.
-        // We instead flip via the texture's UVs in setupMesh().
         return canvas;
     }
 
@@ -306,6 +393,336 @@
         }
         pos.needsUpdate = true;
         geom.computeVertexNormals();
+    }
+
+
+    // ─── Terrain stats + auto exaggeration ─────────────────────────
+    function computeTerrainStats(raster) {
+        const { data } = raster;
+        let minE = Infinity, maxE = -Infinity;
+        for (let i = 0; i < data.length; i++) {
+            const v = data[i];
+            if (!Number.isFinite(v)) continue;
+            if (v < minE) minE = v;
+            if (v > maxE) maxE = v;
+        }
+        if (!Number.isFinite(minE)) { minE = 0; maxE = 0; }
+        return { minE, maxE };
+    }
+
+    // Auto exag: make the terrain's Z range ≈ AUTO_TARGET_FRACTION of
+    // the longer XY dimension. Small areas with mild relief naturally
+    // need higher values; deep canyons over wide areas land near 1×.
+    function computeAutoExag(s) {
+        const range = s.terrainMaxElevM - s.terrainMinElevM;
+        if (!Number.isFinite(range) || range <= 0) return DEFAULT_EXAGGERATION;
+        const xy = Math.max(s.widthM, s.heightM);
+        const targetZ = xy * AUTO_TARGET_FRACTION;
+        const raw = targetZ / range;
+        return Math.max(1, Math.min(MAX_EXAGGERATION, Math.round(raw)));
+    }
+
+    // Compute the Y position of the skirt's base plane (and the bottom
+    // of the depth axis). A little below the deepest exaggerated point.
+    function computeBaseY(s) {
+        const minY = s.terrainMinElevM * s.exaggeration;
+        const maxY = s.terrainMaxElevM * s.exaggeration;
+        const pad = Math.max((maxY - minY) * SKIRT_PAD_FRACTION, 0.5);
+        return minY - pad;
+    }
+
+
+    // ─── Skirt (extruded walls + bottom cap) ───────────────────────
+    // Turns the height field from a paper-thin sheet into a solid
+    // relief diorama. Walls connect each top-edge vertex straight down
+    // to the base plane; bottom cap is a single quad. Uses DoubleSide
+    // so winding doesn't have to be perfect.
+    function buildSkirtGeometry(s) {
+        const THREE = window.THREE;
+        const cols = s.detail, rows = s.detail;
+        const pos = s.geometry.attributes.position;
+        const baseY = s.baseY;
+        const halfW = s.widthM / 2;
+        const halfH = s.heightM / 2;
+
+        // Pre-allocate: 4 edges × (count-1) quads × 6 indices, plus 1
+        // bottom quad. 4 walls share vertex counts (cols == rows here).
+        const positions = [];
+        const indices = [];
+
+        function pushVert(x, y, z) {
+            const i = positions.length / 3;
+            positions.push(x, y, z);
+            return i;
+        }
+        function pushQuad(a, b, c, d) {
+            indices.push(a, b, c, a, c, d);
+        }
+
+        // Walk one edge and build a strip of quads down to baseY.
+        function buildEdge(getVi) {
+            const n = cols;  // == rows
+            // Build alternating top + bottom rows so we share verts
+            // across adjacent quads.
+            let prevTop = -1, prevBot = -1;
+            for (let i = 0; i < n; i++) {
+                const vi = getVi(i);
+                const x = pos.getX(vi), y = pos.getY(vi), z = pos.getZ(vi);
+                const top = pushVert(x, y,     z);
+                const bot = pushVert(x, baseY, z);
+                if (i > 0) pushQuad(prevTop, top, bot, prevBot);
+                prevTop = top; prevBot = bot;
+            }
+        }
+
+        // North (r=0), c increasing.
+        buildEdge(i => 0 * cols + i);
+        // East (c=cols-1), r increasing.
+        buildEdge(i => i * cols + (cols - 1));
+        // South (r=rows-1), c decreasing.
+        buildEdge(i => (rows - 1) * cols + ((cols - 1) - i));
+        // West (c=0), r decreasing.
+        buildEdge(i => ((rows - 1) - i) * cols + 0);
+
+        // Bottom cap — a single quad at baseY.
+        const bA = pushVert(-halfW, baseY, -halfH);
+        const bB = pushVert(+halfW, baseY, -halfH);
+        const bC = pushVert(+halfW, baseY, +halfH);
+        const bD = pushVert(-halfW, baseY, +halfH);
+        pushQuad(bA, bD, bC, bB);
+
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position',
+                       new THREE.Float32BufferAttribute(positions, 3));
+        g.setIndex(indices);
+        g.computeVertexNormals();
+        return g;
+    }
+
+    function setupSkirt(s) {
+        const THREE = window.THREE;
+        s.skirtGeom = buildSkirtGeometry(s);
+        s.skirtMat = new THREE.MeshStandardMaterial({
+            color: SKIRT_COLOR,
+            roughness: 0.95,
+            metalness: 0.0,
+            side: THREE.DoubleSide,
+            flatShading: true,
+        });
+        s.skirt = new THREE.Mesh(s.skirtGeom, s.skirtMat);
+        s.scene.add(s.skirt);
+    }
+
+    function rebuildSkirt(s) {
+        if (!s.skirt) return;
+        const old = s.skirtGeom;
+        s.skirtGeom = buildSkirtGeometry(s);
+        s.skirt.geometry = s.skirtGeom;
+        if (old) old.dispose();
+    }
+
+
+    // ─── Depth axis (the side ruler) ───────────────────────────────
+    // A vertical line at the NW corner with ticks at "nice" depth
+    // intervals in feet, plus a "Surface" label at y=0. Provides
+    // depth context independent of camera framing or exag.
+    function pickTickStepFt(maxDepthFt) {
+        if (maxDepthFt <= 0) return 10;
+        const targetSteps = 5;
+        const raw = maxDepthFt / targetSteps;
+        const exp = Math.floor(Math.log10(raw));
+        const f = raw / Math.pow(10, exp);
+        let nice;
+        if (f < 1.5)      nice = 1;
+        else if (f < 3.5) nice = 2;
+        else if (f < 7.5) nice = 5;
+        else              nice = 10;
+        return Math.max(1, nice * Math.pow(10, exp));
+    }
+
+    function makeAxisLabelCanvas(text) {
+        const measure = document.createElement("canvas").getContext("2d");
+        measure.font = "bold 28px Inter, sans-serif";
+        const w = Math.ceil(measure.measureText(text).width + 24);
+        const h = 44;
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.font = "bold 28px Inter, sans-serif";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(7, 8, 12, 0.82)";
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = "rgba(158, 182, 208, 0.55)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(0.75, 0.75, w - 1.5, h - 1.5);
+        ctx.fillStyle = "#dbe6f3";
+        ctx.fillText(text, w / 2, h / 2 + 1);
+        return canvas;
+    }
+
+    function setupDepthAxis(s) {
+        const THREE = window.THREE;
+        s.axis = new THREE.Group();
+        s.scene.add(s.axis);
+        rebuildDepthAxis(s);
+    }
+
+    function rebuildDepthAxis(s) {
+        if (!s.axis) return;
+        const THREE = window.THREE;
+
+        // Wipe previous children — their geometries/materials all need
+        // to be disposed because we rebuild from scratch on every exag
+        // change (tick positions in scene-Y depend on exag).
+        while (s.axis.children.length) {
+            const c = s.axis.children.pop();
+            if (c.geometry) c.geometry.dispose();
+            if (c.material) {
+                if (c.material.map) c.material.map.dispose();
+                c.material.dispose();
+            }
+        }
+
+        const halfW = s.widthM / 2;
+        const halfH = s.heightM / 2;
+        const span = Math.max(s.widthM, s.heightM);
+        const margin = span * 0.05;
+        const tickLen = margin * 0.6;
+        // Place the axis just outside the NW corner.
+        const x = -halfW - margin;
+        const z = -halfH - margin;
+
+        const exag = s.exaggeration;
+        const yBottom = s.baseY;
+        const topPadM = Math.max((s.terrainMaxElevM - s.terrainMinElevM) * 0.05,
+                                  1);
+        const yTop = Math.max(0, s.terrainMaxElevM * exag) + topPadM * exag;
+
+        const maxDepthM = Math.max(0, -s.terrainMinElevM);
+        const maxDepthFt = maxDepthM * 3.28084;
+        const stepFt = pickTickStepFt(maxDepthFt);
+
+        // Build line segments: main axis + ticks.
+        const seg = [];
+        seg.push(new THREE.Vector3(x, yBottom, z),
+                 new THREE.Vector3(x, yTop,    z));
+        // Surface tick (depth 0).
+        seg.push(new THREE.Vector3(x, 0, z),
+                 new THREE.Vector3(x - tickLen, 0, z - tickLen));
+        const deepestY = s.terrainMinElevM * exag;
+        // Deepest tick.
+        if (maxDepthFt > 0.5) {
+            seg.push(new THREE.Vector3(x, deepestY, z),
+                     new THREE.Vector3(x - tickLen, deepestY, z - tickLen));
+        }
+        // Intermediate ticks.
+        const interTicks = [];
+        for (let dFt = stepFt; dFt < maxDepthFt - stepFt * 0.5; dFt += stepFt) {
+            const dM = dFt / 3.28084;
+            const yT = -dM * exag;
+            seg.push(new THREE.Vector3(x, yT, z),
+                     new THREE.Vector3(x - tickLen * 0.7,
+                                       yT,
+                                       z - tickLen * 0.7));
+            interTicks.push({ ft: dFt, y: yT });
+        }
+        const lineGeom = new THREE.BufferGeometry().setFromPoints(seg);
+        const lineMat  = new THREE.LineBasicMaterial({ color: AXIS_COLOR });
+        const lines = new THREE.LineSegments(lineGeom, lineMat);
+        lines.renderOrder = 3;
+        s.axis.add(lines);
+
+        // Labels.
+        const labelHeight = span * 0.025;
+        function addLabel(text, yPos) {
+            const canvas = makeAxisLabelCanvas(text);
+            const tex = new THREE.CanvasTexture(canvas);
+            if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+            tex.needsUpdate = true;
+            const mat = new THREE.SpriteMaterial({
+                map: tex,
+                transparent: true,
+                depthTest: false,
+            });
+            const sprite = new THREE.Sprite(mat);
+            const aspect = canvas.width / canvas.height;
+            sprite.scale.set(labelHeight * aspect, labelHeight, 1);
+            sprite.position.set(
+                x - tickLen - labelHeight * aspect * 0.55,
+                yPos,
+                z - tickLen,
+            );
+            sprite.renderOrder = 4;
+            s.axis.add(sprite);
+        }
+        addLabel("Surface", 0);
+        for (const t of interTicks) addLabel(`${t.ft} ft`, t.y);
+        if (maxDepthFt > 0.5) {
+            addLabel(`${Math.round(maxDepthFt)} ft`, deepestY);
+        }
+    }
+
+
+    // Sample the raster at a scene-space XZ position. Used by VE update
+    // to snap the orbit target to the new exaggerated seafloor at the
+    // panned XZ. Clamps to the bbox so panning past the edge stays on
+    // the nearest cell instead of dropping to zero / NaN.
+    function sampleElevAtSceneXZ(s, sceneX, sceneZ) {
+        if (!s.raster) return 0;
+        const halfW = s.widthM / 2;
+        const halfH = s.heightM / 2;
+        let fracX = (sceneX + halfW) / s.widthM;
+        let fracZ = (sceneZ + halfH) / s.heightM;
+        fracX = Math.max(0, Math.min(1, fracX));
+        fracZ = Math.max(0, Math.min(1, fracZ));
+        const { w, h, data } = s.raster;
+        const r = Math.min(h - 1, Math.floor(fracZ * h));
+        const c = Math.min(w - 1, Math.floor(fracX * w));
+        const v = data[r * w + c];
+        if (Number.isFinite(v)) return v;
+        return 0;
+    }
+
+    // Centroid of the exaggerated *terrain* alone (no skirt, no y=0).
+    // Used as the orbit pivot so zoom-in moves toward the seafloor —
+    // `computeSceneBoundingBox` includes y=0 and baseY, which biases
+    // the centre off the terrain at high exag and pulls the camera
+    // into open space on zoom.
+    function computeTerrainCenter(s) {
+        const THREE = window.THREE;
+        s.geometry.computeBoundingBox();
+        const c = new THREE.Vector3();
+        s.geometry.boundingBox.getCenter(c);
+        return c;
+    }
+
+
+    // ─── Apply an exaggeration change ──────────────────────────────
+    // Single chokepoint for VE updates: triggered by the slider, by the
+    // Auto button, and by Auto on initial open. Recomputes heights,
+    // rebuilds the skirt + axis, re-snaps the orbit target to the
+    // (now stretched) seafloor at the user's current pan XZ, and
+    // resizes the scale legend.
+    function applyExaggeration(s) {
+        if (!s.geometry || !s.raster) return;
+        setHeightsOnGeometry(s.geometry, s.raster, s.detail,
+                              s.exaggeration, s.widthM, s.heightM);
+        s.baseY = computeBaseY(s);
+        rebuildSkirt(s);
+        rebuildDepthAxis(s);
+        // Pivot Y has to follow the stretched terrain or zoom drifts
+        // off into open space. Preserve the user's panned XZ; only Y
+        // moves. recenterCameraTo translates camera+target together so
+        // the viewpoint angle/distance is unchanged.
+        if (s.camera && s.controls) {
+            const THREE = window.THREE;
+            const tx = s.controls.target.x;
+            const tz = s.controls.target.z;
+            const ty = sampleElevAtSceneXZ(s, tx, tz) * s.exaggeration;
+            recenterCameraTo(s, new THREE.Vector3(tx, ty, tz));
+        }
+        updateLegend(s);
     }
 
 
@@ -365,17 +782,15 @@
         s.scene = new THREE.Scene();
         s.scene.background = new THREE.Color(0x07080c);
 
-        // Camera positioned at a 45° elevation looking down at the
-        // surface from the southwest. Distance scaled to the largest
-        // bbox dimension so the whole rectangle is in view at boot.
+        // Initial camera. The actual position + look target are written
+        // by frameCamera() once the geometry exists; the constructor
+        // values just give it a sane aspect/FOV so frameCamera can read
+        // them back. Near/far are placeholders, also rewritten later.
         const span = Math.max(s.widthM, s.heightM);
-        const distance = span * 1.4;
         const fov = 45;
         s.camera = new THREE.PerspectiveCamera(fov, W / H,
                                                 Math.max(0.1, span / 1000),
-                                                span * 20);
-        s.camera.position.set(span * 0.6, distance * 0.7, span * 0.8);
-        s.camera.lookAt(0, 0, 0);
+                                                span * 50);
 
         s.ambient = new THREE.AmbientLight(0xb0c4d4, 0.45);
         s.scene.add(s.ambient);
@@ -387,11 +802,56 @@
         s.controls = new THREE.OrbitControls(s.camera, s.renderer.domElement);
         s.controls.enableDamping = true;
         s.controls.dampingFactor = 0.08;
-        s.controls.minDistance = span * 0.05;
-        s.controls.maxDistance = span * 6;
-        s.controls.maxPolarAngle = Math.PI * 0.49;  // never below horizon
-        s.controls.target.set(0, 0, 0);
-        s.controls.update();
+        s.controls.minDistance = span * 0.02;
+        s.controls.maxDistance = span * 10;
+        // No polar-angle clamp — user can orbit fully, including under the
+        // terrain to see the underside of the relief block.
+        s.controls.minPolarAngle = 0;
+        s.controls.maxPolarAngle = Math.PI;
+
+        // Pan + zoom-to-cursor. screenSpacePanning=false keeps pan in the
+        // world horizontal (XZ) plane — screen-space panning on a tilted
+        // camera is disorienting on a height-field. zoomToCursor (r146+)
+        // dollies toward the world point under the cursor instead of the
+        // screen centre.
+        s.controls.enablePan = true;
+        s.controls.screenSpacePanning = false;
+        if ('zoomToCursor' in s.controls) s.controls.zoomToCursor = true;
+        // Default OrbitControls binds MIDDLE to DOLLY; remap to PAN so
+        // middle-drag pans (matches DCC / GIS convention). RIGHT already
+        // pans by default.
+        s.controls.mouseButtons = {
+            LEFT:   THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.PAN,
+            RIGHT:  THREE.MOUSE.PAN,
+        };
+
+        // Trackpad-friendly pan: hold Shift to make left-drag pan.
+        // OrbitControls reads mouseButtons.LEFT on pointerdown, so we
+        // swap the binding on shift-down and restore on shift-up.
+        s.onShiftDown = (e) => {
+            if (e.key === 'Shift' && s.controls) {
+                s.controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
+            }
+        };
+        s.onShiftUp = (e) => {
+            if (e.key === 'Shift' && s.controls) {
+                s.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+            }
+        };
+        window.addEventListener('keydown', s.onShiftDown);
+        window.addEventListener('keyup',   s.onShiftUp);
+
+        // The 'change' event fires on every controls.update(). The
+        // legend depends on the full camera pose (pan / rotate / zoom
+        // all change how 1.7 m projects), so re-size it on each event
+        // — but cheaply: updateLegend is a couple of matrix multiplies
+        // and one style write, well under a frame.
+        s.onControlsChange = () => {
+            if (!session || session !== s) return;
+            updateLegend(s);
+        };
+        s.controls.addEventListener('change', s.onControlsChange);
 
         // Resize handler — bound here so close() can remove it cleanly.
         s.onResize = () => {
@@ -402,6 +862,7 @@
             s.renderer.setSize(ww, hh, false);
             s.camera.aspect = ww / hh;
             s.camera.updateProjectionMatrix();
+            updateLegend(s);
         };
         window.addEventListener("resize", s.onResize);
     }
@@ -420,6 +881,162 @@
             r * Math.cos(az),
         );
         light.target.position.set(0, 0, 0);
+    }
+
+
+    // ─── Camera framing ────────────────────────────────────────────
+    // Aim the camera at the *actual* centre of the mesh's bounding box
+    // and back it off far enough to fit the bounding sphere (with
+    // padding) into the current FOV.
+    //
+    // This matters because the mesh's Y range is the elevation values
+    // (negative for sub-sea depths) — not centred on Y=0. An older
+    // version of this file targeted the origin, which left the seafloor
+    // dangling below the camera target and pushed the geometry into the
+    // bottom-left of the frame. Targeting the bbox centre fixes that.
+    function frameCamera(s) {
+        const THREE = window.THREE;
+        if (!s.geometry || !s.camera || !s.controls) return;
+
+        // Pivot = centroid of the exaggerated *terrain* bbox so zoom-in
+        // tracks the seafloor (not a point biased toward y=0).
+        const target = computeTerrainCenter(s);
+
+        // Framing radius uses terrain + skirt (and y=0 for the Surface
+        // tick) so nothing visible clips out of view.
+        const bb = computeSceneBoundingBox(s);
+        const sphere = new THREE.Sphere();
+        bb.getBoundingSphere(sphere);
+        // Guard against a degenerate (zero-radius) sphere when the
+        // raster is completely flat — fall back to the bbox half-span.
+        const span = Math.max(s.widthM, s.heightM);
+        const r = Math.max(sphere.radius, span * 0.5) * FRAME_PADDING;
+
+        const fovV = s.camera.fov * Math.PI / 180;
+        const aspect = s.camera.aspect || 1;
+        const fovH = 2 * Math.atan(Math.tan(fovV / 2) * aspect);
+        // Smaller FOV is the binding constraint when fitting a sphere.
+        const fovMin = Math.min(fovV, fovH);
+        const dist = r / Math.sin(fovMin / 2);
+
+        const az = FRAME_AZIMUTH_DEG * Math.PI / 180;
+        const el = FRAME_ELEVATION_DEG * Math.PI / 180;
+        s.camera.position.set(
+            target.x + dist * Math.cos(el) * Math.sin(az),
+            target.y + dist * Math.sin(el),
+            target.z + dist * Math.cos(el) * Math.cos(az),
+        );
+
+        s.controls.target.copy(target);
+
+        // Resize near/far around the new distance so a deep + steeply
+        // exaggerated mesh doesn't get clipped on either end.
+        s.camera.near = Math.max(0.05, dist / 5000);
+        s.camera.far  = Math.max(span * 50, dist * 10);
+        s.camera.updateProjectionMatrix();
+        s.controls.update();
+        // Reset View changes the camera pose; the on-screen legend
+        // depends on it.
+        updateLegend(s);
+    }
+
+    // Compute the bounding box used for framing — includes the terrain,
+    // y=0 (where the depth axis's Surface tick sits), and the skirt's
+    // base (s.baseY). The raw geometry bbox alone leaves the Surface
+    // tick off-screen at high exag because the seafloor's Y range may
+    // not span 0.
+    function computeSceneBoundingBox(s) {
+        const THREE = window.THREE;
+        s.geometry.computeBoundingBox();
+        const bb = s.geometry.boundingBox.clone();
+        bb.min.y = Math.min(bb.min.y, 0, s.baseY ?? bb.min.y);
+        bb.max.y = Math.max(bb.max.y, 0);
+        return bb;
+    }
+
+    // VE-change camera update: translate position + target by the delta
+    // between the old and new bbox centres so the orbit angle and
+    // distance are preserved. Keeps the user's current viewpoint while
+    // the terrain reshapes itself underneath. Near/far are tightened to
+    // the new distance so a tall stretched mesh isn't clipped.
+    function recenterCameraTo(s, newCenter) {
+        const offset = s.camera.position.clone().sub(s.controls.target);
+        s.controls.target.copy(newCenter);
+        s.camera.position.copy(newCenter).add(offset);
+        const dist = s.camera.position.distanceTo(s.controls.target);
+        const span = Math.max(s.widthM, s.heightM);
+        s.camera.near = Math.max(0.05, dist / 5000);
+        s.camera.far  = Math.max(span * 50, dist * 10);
+        s.camera.updateProjectionMatrix();
+        s.controls.update();
+    }
+
+
+    // ─── Scale legend (screen-space DOM overlay) ───────────────────
+    // The legend is NOT a 3D object — it lives in the DOM, pinned to the
+    // bottom-left of the viewport. We size the silhouette + bar each
+    // frame to whatever 1.7 m projects to at the terrain centroid for
+    // the current camera + exaggeration. That makes it grow when the
+    // user zooms in (where contour features get bigger too) and shrink
+    // on zoom-out, so a side-by-side comparison stays meaningful.
+    //
+    // Projection: take two world-space points (centroid_x, centroid_y,
+    // centroid_z) and the same point 1.7×exag metres higher, project
+    // both through the camera, take the pixel distance between them.
+    function setupLegend(s) {
+        s.legendEl        = $("inspect3d-legend");
+        s.legendGraphicEl = $("inspect3d-legend-graphic");
+        s.legendLabelEl   = $("inspect3d-legend-label");
+        if (s.legendEl) {
+            s.legendEl.classList.toggle("hidden", !s.showFigure);
+        }
+        updateLegend(s);
+    }
+
+    function updateLegend(s) {
+        if (!s.legendEl || !s.legendGraphicEl || !s.legendLabelEl) return;
+        if (!s.showFigure) {
+            s.legendEl.classList.add("hidden");
+            return;
+        }
+        s.legendEl.classList.remove("hidden");
+
+        if (!s.camera || !s.renderer || !s.geometry) {
+            // Not enough state yet; leave the last size in place.
+            return;
+        }
+
+        const THREE = window.THREE;
+        const centroid = computeTerrainCenter(s);
+        const above = new THREE.Vector3(
+            centroid.x,
+            centroid.y + FIGURE_HEIGHT_M * s.exaggeration,
+            centroid.z,
+        );
+        // .project() needs the camera's matrices to be current. The
+        // controls.update() inside the render loop handles that, but
+        // when we tick from an event (controls.change, exaggeration
+        // slider) the camera state is also current — OrbitControls
+        // mutates camera.matrix* synchronously.
+        const pNDC  = centroid.clone().project(s.camera);
+        const pHigh = above.project(s.camera);
+        const viewH = s.renderer.domElement.clientHeight || 1;
+
+        // NDC y is in [-1, 1] with +y up. Pixel distance from a Δy in
+        // NDC is |Δy| * viewportHeight / 2.
+        let px = Math.abs(pNDC.y - pHigh.y) * viewH * 0.5;
+        if (!Number.isFinite(px)) px = LEGEND_MIN_PX;
+
+        const maxPx = Math.max(LEGEND_MIN_PX,
+                                Math.floor(viewH * LEGEND_MAX_VH_FRAC));
+        let clipped = false;
+        if (px < LEGEND_MIN_PX) px = LEGEND_MIN_PX;
+        if (px > maxPx) { px = maxPx; clipped = true; }
+
+        s.legendGraphicEl.style.height = `${Math.round(px)}px`;
+        const exagTxt = `${s.exaggeration}×`;
+        const baseLbl = `1.7 m · 5'7" @ ${exagTxt}`;
+        s.legendLabelEl.textContent = clipped ? `${baseLbl} (clipped)` : baseLbl;
     }
 
 
@@ -470,9 +1087,14 @@
             raster:      null,
             detail:       DEFAULT_DETAIL,
             exaggeration: DEFAULT_EXAGGERATION,
+            autoMode:     true,
             lightDeg:     DEFAULT_LIGHT_DEG,
             fetchSize:    DEFAULT_FETCH_SIZE,
             widthM, heightM,
+            terrainMinElevM: 0,
+            terrainMaxElevM: 0,
+            baseY:        0,
+            showFigure:   true,
         };
         session = s;
 
@@ -500,11 +1122,29 @@
         if (session !== s) return;
         s.raster = raster;
 
+        // Now that we have the raster, compute the elevation extremes
+        // (needed by auto-exag, the skirt base, and the depth axis).
+        const stats = computeTerrainStats(s.raster);
+        s.terrainMinElevM = stats.minE;
+        s.terrainMaxElevM = stats.maxE;
+        if (s.autoMode) {
+            s.exaggeration = computeAutoExag(s);
+        }
+        s.baseY = computeBaseY(s);
+        // Reflect the auto-computed value back to the slider UI.
+        resetControlsToDefaults(s);
+
         // Build scene + mesh. Hide the loading text once the renderer
         // is on screen.
         try {
             setupScene(s);
             setupMesh(s);
+            setupSkirt(s);
+            setupDepthAxis(s);
+            setupLegend(s);
+            // Frame after everything is in the scene so the camera fits
+            // the actual mesh bbox (not the placeholder constructor pose).
+            frameCamera(s);
         } catch (err) {
             console.error("[inspector3d] scene build failed:", err);
             setStatus(`3D render failed: ${err.message || err}`, true);
@@ -522,11 +1162,32 @@
 
         if (s.raf) cancelAnimationFrame(s.raf);
         if (s.onResize) window.removeEventListener("resize", s.onResize);
+        if (s.onShiftDown) window.removeEventListener("keydown", s.onShiftDown);
+        if (s.onShiftUp)   window.removeEventListener("keyup",   s.onShiftUp);
+        if (s.controls && s.onControlsChange) {
+            s.controls.removeEventListener("change", s.onControlsChange);
+        }
         if (s.controls) s.controls.dispose();
         if (s.mesh && s.scene) s.scene.remove(s.mesh);
         if (s.geometry) s.geometry.dispose();
         if (s.material) s.material.dispose();
         if (s.texture) s.texture.dispose();
+        if (s.skirt && s.scene) s.scene.remove(s.skirt);
+        if (s.skirtGeom) s.skirtGeom.dispose();
+        if (s.skirtMat) s.skirtMat.dispose();
+        if (s.axis && s.scene) {
+            s.scene.remove(s.axis);
+            for (const c of s.axis.children) {
+                if (c.geometry) c.geometry.dispose();
+                if (c.material) {
+                    if (c.material.map) c.material.map.dispose();
+                    c.material.dispose();
+                }
+            }
+        }
+        // Hide the legend overlay so it doesn't sit on top of the
+        // basemap underneath the modal until the next open() reshows it.
+        if (s.legendEl) s.legendEl.classList.add("hidden");
         if (s.renderer) {
             // Forces the WebGL context to release immediately — important
             // because the browser caps concurrent contexts.
@@ -585,18 +1246,22 @@
 
     // ─── Controls ──────────────────────────────────────────────────
     function resetControlsToDefaults(s) {
-        const $exag   = $("inspect3d-exag");
-        const $exagV  = $("inspect3d-exag-val");
-        const $det    = $("inspect3d-detail");
-        const $detV   = $("inspect3d-detail-val");
-        const $light  = $("inspect3d-light");
-        const $lightV = $("inspect3d-light-val");
+        const $exag    = $("inspect3d-exag");
+        const $exagV   = $("inspect3d-exag-val");
+        const $auto    = $("inspect3d-auto-btn");
+        const $det     = $("inspect3d-detail");
+        const $detV    = $("inspect3d-detail-val");
+        const $light   = $("inspect3d-light");
+        const $lightV  = $("inspect3d-light-val");
+        const $figure  = $("inspect3d-show-figure");
         if ($exag)   $exag.value  = String(s.exaggeration);
         if ($exagV)  $exagV.textContent = `${s.exaggeration}×`;
+        if ($auto)   $auto.classList.toggle("active", !!s.autoMode);
         if ($det)    $det.value   = String(s.detail);
         if ($detV)   $detV.textContent = `${s.detail}²`;
         if ($light)  $light.value = String(s.lightDeg);
         if ($lightV) $lightV.textContent = `${s.lightDeg}°`;
+        if ($figure) $figure.checked = !!s.showFigure;
     }
 
 
@@ -731,11 +1396,13 @@
         const $backdrop = $("inspect3d-backdrop");
         const $exag    = $("inspect3d-exag");
         const $exagV   = $("inspect3d-exag-val");
+        const $auto    = $("inspect3d-auto-btn");
         const $det     = $("inspect3d-detail");
         const $detV    = $("inspect3d-detail-val");
         const $light   = $("inspect3d-light");
         const $lightV  = $("inspect3d-light-val");
         const $reset   = $("inspect3d-reset");
+        const $figure  = $("inspect3d-show-figure");
 
         if ($close)    $close.addEventListener("click", close);
         if ($backdrop) $backdrop.addEventListener("click", close);
@@ -745,9 +1412,28 @@
             if ($exagV) $exagV.textContent = `${v}×`;
             const s = session;
             if (!s || !s.geometry || !s.raster) return;
+            // User dragged the slider — they're overriding Auto.
+            if (s.autoMode) {
+                s.autoMode = false;
+                if ($auto) $auto.classList.remove("active");
+            }
             s.exaggeration = v;
-            setHeightsOnGeometry(s.geometry, s.raster, s.detail,
-                                  s.exaggeration, s.widthM, s.heightM);
+            applyExaggeration(s);
+        });
+
+        if ($auto) $auto.addEventListener("click", () => {
+            const s = session;
+            if (!s) return;
+            // Toggle. When turning Auto on, recompute and apply
+            // immediately so the user sees the change.
+            s.autoMode = !s.autoMode;
+            $auto.classList.toggle("active", s.autoMode);
+            if (s.autoMode && s.raster) {
+                s.exaggeration = computeAutoExag(s);
+                if ($exag)  $exag.value = String(s.exaggeration);
+                if ($exagV) $exagV.textContent = `${s.exaggeration}×`;
+                applyExaggeration(s);
+            }
         });
 
         // Detail slider commits on `change` (release) not `input` — a
@@ -763,6 +1449,9 @@
                 if (!s || !s.raster) return;
                 s.detail = v;
                 rebuildGeometry(s);
+                // Skirt walls reference edge vertices of the height
+                // field — a new vertex count means a new skirt.
+                rebuildSkirt(s);
             });
         }
 
@@ -779,11 +1468,17 @@
         if ($reset) $reset.addEventListener("click", () => {
             const s = session;
             if (!s || !s.controls) return;
-            const span = Math.max(s.widthM, s.heightM);
-            const distance = span * 1.4;
-            s.camera.position.set(span * 0.6, distance * 0.7, span * 0.8);
-            s.controls.target.set(0, 0, 0);
-            s.controls.update();
+            // Same framing the modal lands on at open — bounding-box
+            // centre, fitted distance, default azimuth/elevation.
+            frameCamera(s);
+        });
+
+        if ($figure) $figure.addEventListener("change", (e) => {
+            const s = session;
+            const on = !!e.target.checked;
+            if (!s) return;
+            s.showFigure = on;
+            updateLegend(s);
         });
     }
 

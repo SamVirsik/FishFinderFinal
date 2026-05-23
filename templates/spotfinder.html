@@ -51,10 +51,38 @@
     <section class="spotfinder-card">
         <div class="spotfinder-card-header">
             <h2>Algorithm configuration</h2>
-            <span class="spotfinder-card-tag muted">Coming soon</span>
+            <span class="spotfinder-card-tag muted" id="sf-cfg-tag">Defaults</span>
         </div>
-        <div class="spotfinder-placeholder">
-            <p>Tuning knobs for the Spotfinder pipeline will appear in this section.</p>
+        <!-- Controls are populated by spotfinder.js: environment + structure
+             types render from a single SF_CONFIG table (mirrors the backend
+             registries), and the source dropdown fills from /sources with the
+             map's active source preselected. -->
+        <div class="sf-config">
+            <div class="sf-config-field">
+                <label class="field-label" for="sf-cfg-source">Data source</label>
+                <select class="select" id="sf-cfg-source">
+                    <option value="" disabled selected>Loading sources…</option>
+                </select>
+                <p class="field-hint" id="sf-cfg-source-hint">
+                    Defaults to the source you were viewing on the map.
+                </p>
+            </div>
+
+            <div class="sf-config-field">
+                <label class="field-label" for="sf-cfg-environment">Environment</label>
+                <select class="select" id="sf-cfg-environment"></select>
+                <p class="field-hint" id="sf-cfg-environment-hint"></p>
+            </div>
+
+            <div class="sf-config-field sf-config-field-wide">
+                <label class="field-label">Target structures</label>
+                <div class="sf-checks" id="sf-cfg-structures"
+                     role="group" aria-label="Target structure types"></div>
+                <p class="field-hint" id="sf-cfg-structures-hint">
+                    Results are limited to the structure types you select.
+                    At least one is required.
+                </p>
+            </div>
         </div>
     </section>
 

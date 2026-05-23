@@ -67,9 +67,17 @@
 /** @typedef {Object.<string, unknown>} SpotfinderParams */
 
 /**
+ * @typedef {Object} SpotfinderConfig
+ * @property {string}   [environment]      Environment mode key (e.g. "reef").
+ * @property {string[]} [structure_types]  Target structure type keys.
+ * @property {?string}  [source]           Preferred data source id, or null.
+ */
+
+/**
  * @typedef {Object} SpotfinderInput
  * @property {SearchArea}       search_area
  * @property {SpotfinderParams} params
+ * @property {SpotfinderConfig} [config]
  */
 
 /**
@@ -135,6 +143,11 @@ async function runSpotfinder(input, onProgress) {
     const body = JSON.stringify({
         search_area: area,
         params:      input.params || {},
+        // User-facing run configuration (environment mode + structure types
+        // + preferred source). The backend (resolve_config) translates it
+        // into concrete thresholds + a class filter; an empty/absent config
+        // falls back to the defaults, so old callers keep working.
+        config:      input.config || {},
     });
 
     // The server streams newline-delimited JSON. We read the ReadableStream
