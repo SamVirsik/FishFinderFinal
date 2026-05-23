@@ -2969,6 +2969,66 @@ require([
         return `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
     }
 
+    // Runs have no name until the user sets one (the field is added on
+    // first rename — see beginRename). Until then the run-timestamp label
+    // doubles as the display name, so a never-renamed run reads the same
+    // as it always has.
+    const MAX_RUN_NAME = 80;
+    function runDisplayName(result) {
+        const n = result && typeof result.name === "string" ? result.name.trim() : "";
+        return n || fmtRunTimestamp(result.timestamp);
+    }
+
+    // Full config readout for the expandable "Settings" block on a run card.
+    // Surfaces the environment, targeted structure types, and the per-type
+    // size ranges that shaped THIS run — so a saved/renamed run shows exactly
+    // what produced it. User-facing type keys here ("mound", not the internal
+    // "ridge"); width-measured types are flagged so the number's meaning is
+    // unambiguous. Runs predating the size filter show "Not applied".
+    const RUN_STRUCT_LABELS = {
+        pinnacle: "Pinnacle", mound: "Mound / hump", ledge: "Ledge",
+        saddle: "Saddle", hole: "Hole", channel: "Channel",
+    };
+    const RUN_SIZE_MEASURE = {
+        pinnacle: "longest", saddle: "longest", hole: "longest",
+        mound: "width", ledge: "width", channel: "width",
+    };
+    function runSettingsHtml(result) {
+        const cfg = (result && result.config) || {};
+        const setting = (key, val) =>
+            `<div class="sf-run-setting">
+                <span class="sf-run-setting-key">${escapeHtml(key)}</span>
+                <span class="sf-run-setting-val">${val}</span>
+            </div>`;
+
+        const rows = [];
+        const env = (result.manifest && result.manifest.environment_label)
+                  || cfg.environment || "—";
+        rows.push(setting("Environment",
+            escapeHtml(env) + (cfg.legacy ? " <em>(legacy)</em>" : "")));
+
+        const types = Array.isArray(cfg.structure_types) ? cfg.structure_types : [];
+        rows.push(setting("Structures", escapeHtml(
+            types.length ? types.map(t => RUN_STRUCT_LABELS[t] || t).join(", ") : "—")));
+
+        const sr = cfg.size_ranges;
+        if (sr && typeof sr === "object") {
+            const lines = types.filter(t => sr[t]).map((t) => {
+                const r = sr[t];
+                const w = RUN_SIZE_MEASURE[t] === "width" ? " · width" : "";
+                return `${RUN_STRUCT_LABELS[t] || t} `
+                     + `${Math.round(r.min_ft)}–${Math.round(r.max_ft)} ft${w}`;
+            });
+            if (lines.length) {
+                rows.push(setting("Size ranges",
+                    lines.map(escapeHtml).join("<br>")));
+            }
+        } else {
+            rows.push(setting("Size filter", "Not applied (legacy run)"));
+        }
+        return rows.join("");
+    }
+
     /**
      * Scale factor that shrinks the rotated thumbnail just enough so
      * its corners stay inside the aspect-ratio'd container. For a
@@ -3097,14 +3157,27 @@ require([
     function buildSpotsLayer(result) {
         const layer = new GraphicsLayer({ listMode: "hide" });
         for (const spot of result.spots) {
+            const feat = spot.features || {};
+            const tags = Array.isArray(feat.secondary_tags)
+                       ? feat.secondary_tags : [];
             layer.add(new Graphic({
                 geometry: new Point({
                     longitude: spot.lng,
                     latitude:  spot.lat,
                     spatialReference: { wkid: 4326 },
                 }),
-                symbol: spotSymbol(spot.score,
-                                   spot.features && spot.features.class),
+                symbol: spotSymbol(spot.score, feat.class),
+                // Hover-tooltip payload (see the pointer-move handler).
+                // `__sfSpot` flags these graphics so the hitTest filter can
+                // distinguish them from any other layer's graphics. `tags`
+                // is the raw class keys, joined; the tooltip humanises them.
+                attributes: {
+                    __sfSpot: true,
+                    cls:    feat.class || null,
+                    score:  typeof spot.score === "number" ? spot.score : null,
+                    depthM: typeof spot.depth_m === "number" ? spot.depth_m : null,
+                    tags:   tags.join(","),
+                },
             }));
         }
         return layer;
@@ -3260,43 +3333,114 @@ require([
     const $overlayToggle = document.getElementById("sf-overlay-toggle-fab");
     let overlayHidden = false;
 
-    // ─── Map legend ────────────────────────────────────────
-    // A small key so the user never has to guess what a marker colour or a
-    // dashed hull means. Built once from CLASS_RGB (so it can't drift from
-    // the actual symbology) and shown whenever the overlay is visible.
-    const $legend = document.getElementById("sf-legend");
-    const CLASS_LEGEND = [
-        ["pinnacle", "Pinnacle"],
-        ["ridge",    "Mound / hump"],
-        ["ledge",    "Ledge"],
-        ["saddle",   "Saddle"],
-        ["hole",     "Hole"],
-        ["channel",  "Channel"],
-    ];
-    function buildLegend() {
-        if (!$legend || $legend.childElementCount) return;   // build once
-        const rows = ['<div class="sf-legend-title">Spotfinder spots</div>'];
-        for (const [cls, label] of CLASS_LEGEND) {
-            const rgb = CLASS_RGB[cls] || [180, 180, 180];
-            rows.push(
-                '<div class="sf-legend-row">'
-              + `<span class="sf-legend-dot" style="background:rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></span>`
-              + `<span class="sf-legend-label">${label}</span></div>`
-            );
-        }
-        // The dashed hull groups 2+ nearby high-scoring spots into one
-        // cluster — this row is what makes that outline self-explanatory.
-        rows.push(
-            '<div class="sf-legend-row">'
-          + '<span class="sf-legend-cluster"></span>'
-          + '<span class="sf-legend-label">Cluster of nearby spots</span></div>'
-        );
-        $legend.innerHTML = rows.join("");
+    // ─── Spot hover tooltip ────────────────────────────────
+    // Replaces the old always-on legend. Each spot marker carries its
+    // metadata in `attributes` (see buildSpotsLayer); on pointer-move we
+    // hitTest the active spot layers and, on a hit, show a small dark
+    // tooltip at the cursor naming the structure class plus depth, score
+    // and any NMS-suppressed sibling classes. Same information the legend
+    // carried, but only for the spot under the cursor and without parking
+    // a card over the bottom-left controls.
+    const $spotTip = document.getElementById("sf-spot-tooltip");
+
+    // class key → human label. Mirrors CLASS_RGB's keys; "ridge" reads as
+    // "Mound / hump" to match the Spotfinder configuration UI.
+    const CLASS_LABELS = {
+        pinnacle: "Pinnacle",
+        ridge:    "Mound / hump",
+        ledge:    "Ledge",
+        saddle:   "Saddle",
+        hole:     "Hole",
+        channel:  "Channel",
+    };
+
+    function hideSpotTooltip() {
+        if (!$spotTip) return;
+        $spotTip.classList.remove("visible");
+        $spotTip.setAttribute("aria-hidden", "true");
     }
-    function updateLegend() {
-        if (!$legend) return;
-        buildLegend();
-        $legend.hidden = !(activeIds.size > 0 && !overlayHidden);
+
+    function spotTooltipHtml(attr) {
+        const rows = [
+            `<div class="sf-tip-title">${escapeHtml(CLASS_LABELS[attr.cls] || "Spot")}</div>`,
+        ];
+        const facts = [];
+        // Feet, matching the map's depth card (m × 3.28084) so a hovered
+        // spot reads in the same unit as a clicked depth lookup.
+        if (Number.isFinite(attr.depthM)) {
+            facts.push(`${Math.round(attr.depthM * 3.28084)} ft`);
+        }
+        if (Number.isFinite(attr.score)) facts.push(`score ${Math.round(attr.score * 100)}%`);
+        if (facts.length) {
+            rows.push(`<div class="sf-tip-row">${escapeHtml(facts.join(" · "))}</div>`);
+        }
+        if (attr.tags) {
+            const labels = String(attr.tags).split(",").filter(Boolean)
+                .map((t) => CLASS_LABELS[t] || t);
+            if (labels.length) {
+                rows.push(
+                    `<div class="sf-tip-tags">also: ${escapeHtml(labels.join(", "))}</div>`);
+            }
+        }
+        return rows.join("");
+    }
+
+    function positionSpotTooltip(clientX, clientY) {
+        // Anchor up-right of the cursor, but flip to the opposite side
+        // when that would overflow the viewport so the tip is never
+        // clipped at the map container's edges.
+        const PAD = 14;
+        const rect = $spotTip.getBoundingClientRect();
+        let x = clientX + PAD;
+        let y = clientY + PAD;
+        if (x + rect.width  > window.innerWidth  - 6) x = clientX - PAD - rect.width;
+        if (y + rect.height > window.innerHeight - 6) y = clientY - PAD - rect.height;
+        $spotTip.style.left = `${Math.round(Math.max(6, x))}px`;
+        $spotTip.style.top  = `${Math.round(Math.max(6, y))}px`;
+    }
+
+    function showSpotTooltip(attr, clientX, clientY) {
+        if (!$spotTip) return;
+        $spotTip.innerHTML = spotTooltipHtml(attr);
+        $spotTip.classList.add("visible");
+        $spotTip.setAttribute("aria-hidden", "false");
+        positionSpotTooltip(clientX, clientY);
+    }
+
+    // hitTest is async; a single in-flight guard keeps fast pointer-moves
+    // from queuing a backlog of tests. We skip the work entirely when
+    // there's nothing to hover: no active runs, overlay hidden, or the
+    // user is mid-draw on the Spotfinder rectangle.
+    let _spotHitBusy = false;
+    if ($spotTip && view) {
+        view.on("pointer-move", (event) => {
+            if (activeIds.size === 0 || overlayHidden
+                || spotfinderActive || dragState) {
+                hideSpotTooltip();
+                return;
+            }
+            if (_spotHitBusy) return;
+            const spotLayers = [];
+            for (const set of runLayers.values()) {
+                if (set.spotsLayer) spotLayers.push(set.spotsLayer);
+            }
+            if (!spotLayers.length) { hideSpotTooltip(); return; }
+            _spotHitBusy = true;
+            const cx = event.native ? event.native.clientX : event.x;
+            const cy = event.native ? event.native.clientY : event.y;
+            view.hitTest(event, { include: spotLayers }).then((resp) => {
+                _spotHitBusy = false;
+                const hit = (resp.results || []).find(
+                    (r) => r.graphic && r.graphic.attributes
+                        && r.graphic.attributes.__sfSpot);
+                if (hit) showSpotTooltip(hit.graphic.attributes, cx, cy);
+                else hideSpotTooltip();
+            }).catch(() => { _spotHitBusy = false; hideSpotTooltip(); });
+        });
+        // A tip lingering after the cursor leaves the canvas reads as a
+        // stuck overlay — clear it on leave.
+        const mapEl = view.container || document.getElementById("map");
+        if (mapEl) mapEl.addEventListener("mouseleave", hideSpotTooltip);
     }
 
     function applyOverlayVisibilityTo(layerSet) {
@@ -3321,7 +3465,6 @@ require([
             overlayHidden = false;
             $overlayToggle.classList.remove("overlay-off");
             $overlayToggle.hidden = true;
-            updateLegend();
             return;
         }
         $overlayToggle.hidden = false;
@@ -3333,7 +3476,6 @@ require([
         );
         $overlayToggle.title =
             overlayHidden ? "Show Spotfinder overlay" : "Hide Spotfinder overlay";
-        updateLegend();
     }
 
     function toggleOverlayVisibility() {
@@ -3341,6 +3483,9 @@ require([
         overlayHidden = !overlayHidden;
         applyOverlayVisibility();
         updateOverlayToggleButton();
+        // Toggling the overlay off should also drop any tip the cursor was
+        // resting on, rather than leaving it floating over a hidden marker.
+        if (overlayHidden) hideSpotTooltip();
     }
 
     if ($overlayToggle) {
@@ -3524,13 +3669,34 @@ require([
                     </div>
                 </div>
                 <div class="sf-run-card-body">
-                    <div class="sf-run-card-title">
-                        ${escapeHtml(fmtRunTimestamp(result.timestamp))}
+                    <div class="sf-run-card-title-row">
+                        <span class="sf-run-card-title" title="${escapeHtml(runDisplayName(result))}">${escapeHtml(runDisplayName(result))}</span>
+                        <button class="sf-run-card-rename" type="button"
+                                title="Rename this run" aria-label="Rename this run"
+                                data-action="rename">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M12 20h9"/>
+                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                            </svg>
+                        </button>
                     </div>
                     <div class="sf-run-card-meta-row">
-                        <span class="sf-run-card-meta">${escapeHtml(fmtBboxCenter(result.bbox))}</span>
+                        <span class="sf-run-card-meta">${escapeHtml(fmtRunTimestamp(result.timestamp))} · ${escapeHtml(fmtBboxCenter(result.bbox))}</span>
                         <span class="sf-run-card-spots">${spotsTxt}</span>
                     </div>
+                    <button class="sf-run-card-settings-toggle" type="button"
+                            data-action="settings" aria-expanded="false">
+                        <svg class="sf-run-card-settings-chevron" width="11" height="11"
+                             viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2.5" stroke-linecap="round"
+                             stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                        <span>Settings</span>
+                    </button>
+                    <div class="sf-run-card-settings" hidden>${runSettingsHtml(result)}</div>
                 </div>
             `;
             if (modalSelection.has(result.run_id)) card.classList.add("selected");
@@ -3575,6 +3741,7 @@ require([
     }
 
     // Card click: toggle. Delete button: confirm + remove run.
+    // Rename button: swap the title for an inline editor.
     $modalBody.addEventListener("click", (e) => {
         const delBtn = e.target.closest("[data-action='delete']");
         if (delBtn) {
@@ -3583,15 +3750,100 @@ require([
             if (!card) return;
             const runId = card.dataset.runId;
             const result = runs.get(runId);
-            const label = result ? fmtRunTimestamp(result.timestamp) : "this run";
-            if (!window.confirm(`Delete ${label}? This can't be undone.`)) return;
+            const label = result ? runDisplayName(result) : "this run";
+            if (!window.confirm(`Delete "${label}"? This can't be undone.`)) return;
             deleteRunPermanently(runId);
             return;
         }
+        const renameBtn = e.target.closest("[data-action='rename']");
+        if (renameBtn) {
+            e.stopPropagation();
+            const card = renameBtn.closest(".sf-run-card");
+            if (card) beginRename(card);
+            return;
+        }
+        // Settings toggle: expand/collapse the config readout. Must not
+        // toggle the card's active-on-map selection.
+        const settingsBtn = e.target.closest("[data-action='settings']");
+        if (settingsBtn) {
+            e.stopPropagation();
+            const card = settingsBtn.closest(".sf-run-card");
+            const panel = card && card.querySelector(".sf-run-card-settings");
+            if (panel) {
+                const open = settingsBtn.getAttribute("aria-expanded") === "true";
+                settingsBtn.setAttribute("aria-expanded", open ? "false" : "true");
+                panel.hidden = open;
+            }
+            return;
+        }
+        // A click that lands inside an active inline editor must not
+        // toggle the card's selection.
+        if (e.target.closest(".sf-run-card-title-edit")) return;
         const card = e.target.closest(".sf-run-card");
         if (!card) return;
         toggleSelection(card.dataset.runId);
     });
+
+
+    // ─── Inline rename ────────────────────────────────────
+    //
+    // Click-to-edit swap: the title <span> is replaced by an <input>
+    // seeded with the current display name. Enter / blur commit, Escape
+    // cancels. Names are client-side only (the backend never stored a
+    // name) so a commit is just `result.name = …` + a storage re-save.
+    // Empty / whitespace-only input reverts to the previous name.
+
+    function beginRename(card) {
+        const runId = card.dataset.runId;
+        const result = runs.get(runId);
+        const titleEl = card.querySelector(".sf-run-card-title");
+        if (!result || !titleEl || card.querySelector(".sf-run-card-title-edit")) {
+            return;   // missing run, or an editor is already open
+        }
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "sf-run-card-title-edit";
+        input.value = runDisplayName(result);
+        input.maxLength = MAX_RUN_NAME;
+        input.setAttribute("aria-label", "Run name");
+        titleEl.replaceWith(input);
+
+        let done = false;
+        const commit = (save) => {
+            if (done) return;
+            done = true;
+            if (save) {
+                const next = input.value.trim().slice(0, MAX_RUN_NAME);
+                // Non-empty only; otherwise keep whatever the run had.
+                if (next && next !== (result.name || "").trim()) {
+                    result.name = next;
+                    const res = STORE.saveRun(result);
+                    if (!res.ok) {
+                        console.warn("[spotfinder] rename save failed:", res.error);
+                    }
+                }
+            }
+            // Rebuild the card title from the (possibly updated) run so
+            // the display name and tooltip stay in sync.
+            renderModalBody();
+            updateModalChrome();
+        };
+
+        input.addEventListener("keydown", (ev) => {
+            // Keep keystrokes from reaching the card-level keyboard
+            // handler (Space/Enter toggles selection, arrows navigate).
+            ev.stopPropagation();
+            if (ev.key === "Enter")       { ev.preventDefault(); input.blur(); }
+            else if (ev.key === "Escape") { ev.preventDefault(); commit(false); }
+        });
+        input.addEventListener("blur", () => commit(true));
+        // Stop a click inside the field from bubbling to the card toggle.
+        input.addEventListener("click", (ev) => ev.stopPropagation());
+
+        input.focus();
+        input.select();
+    }
 
     // Keyboard on cards: Space/Enter to toggle, arrow keys to navigate.
     $modalBody.addEventListener("keydown", (e) => {
@@ -3690,11 +3942,16 @@ require([
 
     // ─── Cold-load: read storage + handle ?run=<id> ────────
     //
-    // Persisted active set drives initial visibility — what the user
-    // had on the map last session comes back on refresh. The
-    // `?run=<id>` query param (from the analysis page's "View on map"
-    // CTA) is added to that set if not already, and the view zooms
-    // to its bbox.
+    // Spotfinder overlays start HIDDEN on every load, even when runs
+    // are saved — otherwise old runs clutter the map before the user
+    // asks for them. The one exception is an explicit `?run=<id>` deep
+    // link (the analysis page's "View on map" CTA), so a freshly
+    // generated run still appears immediately. Every saved run stays in
+    // the picker; the user re-shows any of them from the runs modal,
+    // which re-persists the active set for the rest of the session.
+    //
+    // We deliberately do NOT seed the active set from the persisted
+    // active IDs here — that's what made runs reappear on refresh.
 
     function bootRunsPanel() {
         const all = STORE.getAllRuns();
@@ -3703,11 +3960,7 @@ require([
         const qs = new URLSearchParams(window.location.search);
         const focusId = qs.get("run");
 
-        // Filter persisted active IDs against actually-existing runs in
-        // case storage drifted out of sync (e.g. a run got pruned from
-        // outside).
-        const persisted = STORE.getActiveRunIds().filter(id => runs.has(id));
-        const initialActive = new Set(persisted);
+        const initialActive = new Set();
         if (focusId && runs.has(focusId)) initialActive.add(focusId);
 
         applyActiveIds(Array.from(initialActive));

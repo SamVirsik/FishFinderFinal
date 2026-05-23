@@ -300,6 +300,101 @@ STRUCTURE_TYPES = {
 DEFAULT_STRUCTURE_TYPES = tuple(STRUCTURE_TYPES.keys())
 
 
+# ---------------------------------------------------------------------------
+# Per-structure-type size filter — a POST-CLASSIFICATION output gate.
+#
+# The detection + classification + scoring pipeline is untouched; after the
+# regions are finalised we drop any whose real-world footprint falls outside
+# the configured [min_ft, max_ft] for their assigned structure type. This is
+# purely a filter on the output, so it's fully reversible and never shifts a
+# classification or score threshold.
+#
+# SIZE_MEASURE picks WHAT "size" means per type, because "longest extent" is
+# the wrong "is it small?" question for long-thin features:
+#   - "longest" : maximum caliper diameter of the footprint (Feret max) — the
+#                 longest straight-line distance between two boundary points.
+#                 Right for compact features (pinnacle / hole / saddle).
+#   - "width"   : minimum caliper width of the footprint (Feret min) — the
+#                 narrow cross-feature dimension. Right for elongated features
+#                 (mound / ledge / channel), where length tells you nothing
+#                 about whether the spot is small enough to fish.
+#
+# All sizes are real-world FEET, derived from the source's Mercator-corrected
+# ground sample distance (cell_x_m / cell_y_m). No pixel- or cell-space
+# proxy: cell deltas are converted to ground metres first (the conversion is
+# exact for the area at hand — see _hull_metric_pts), then to feet.
+#
+# Defaults reflect realistic fishable scales. min_region_area_cells already
+# removes sub-feature noise; these maxes are what keep a 200-ft "mound" out
+# of the result set unless the user widens the range for the trip.
+# ---------------------------------------------------------------------------
+SIZE_MEASURE = {
+    "pinnacle": "longest",
+    "saddle":   "longest",
+    "hole":     "longest",
+    "mound":    "width",
+    "ledge":    "width",
+    "channel":  "width",
+}
+DEFAULT_SIZE_RANGES = {
+    "pinnacle": {"min_ft":  5.0, "max_ft":  60.0},
+    "mound":    {"min_ft": 20.0, "max_ft": 150.0},
+    "ledge":    {"min_ft":  5.0, "max_ft":  80.0},
+    "saddle":   {"min_ft": 20.0, "max_ft": 200.0},
+    "hole":     {"min_ft": 10.0, "max_ft": 150.0},
+    "channel":  {"min_ft": 10.0, "max_ft": 100.0},
+}
+# Absolute clamps for a client-supplied range (defensive; the UI stays well
+# inside these). 5000 ft is far larger than any fishable structure but small
+# enough to catch a garbage payload.
+SIZE_FT_ABS_MIN = 0.0
+SIZE_FT_ABS_MAX = 5000.0
+_M_TO_FT = 3.280839895
+
+# Reverse map: internal class id → user-facing structure-type key. The size
+# range + measure are keyed by structure type, but the filter sees regions
+# keyed by class id. Built once; first type wins if a class were ever shared.
+_CLASS_TO_STRUCTURE_TYPE = {}
+for _tkey, _spec in STRUCTURE_TYPES.items():
+    for _c in _spec["classes"]:
+        _CLASS_TO_STRUCTURE_TYPE.setdefault(_c, _tkey)
+
+
+def _coerce_ft(value, default):
+    """Best-effort float-feet coercion; falls back to `default` on garbage."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return v if math.isfinite(v) else default
+
+
+def resolve_size_ranges(config):
+    """Validate `config.size_ranges` into a full per-type {min_ft, max_ft} map.
+
+    Always returns an entry for EVERY structure type (not just the selected
+    ones) so a saved run records the complete size configuration. Missing or
+    malformed entries fall back to DEFAULT_SIZE_RANGES; values are clamped to
+    [SIZE_FT_ABS_MIN, SIZE_FT_ABS_MAX] and min/max are swapped if inverted.
+    """
+    requested = config.get("size_ranges") if isinstance(config, dict) else None
+    if not isinstance(requested, dict):
+        requested = {}
+    out = {}
+    for tkey, default in DEFAULT_SIZE_RANGES.items():
+        lo, hi = default["min_ft"], default["max_ft"]
+        entry = requested.get(tkey)
+        if isinstance(entry, dict):
+            lo = _coerce_ft(entry.get("min_ft"), lo)
+            hi = _coerce_ft(entry.get("max_ft"), hi)
+        lo = max(SIZE_FT_ABS_MIN, min(lo, SIZE_FT_ABS_MAX))
+        hi = max(SIZE_FT_ABS_MIN, min(hi, SIZE_FT_ABS_MAX))
+        if hi < lo:
+            lo, hi = hi, lo
+        out[tkey] = {"min_ft": lo, "max_ft": hi}
+    return out
+
+
 def resolve_config(payload):
     """Translate the client payload into the concrete run configuration.
 
@@ -314,6 +409,8 @@ def resolve_config(payload):
         structure_types  — validated user-facing type keys (always >= 1).
         selected_classes — set of internal class ids to extract + surface.
         source_id        — preferred data source id, or None for auto-resolve.
+        size_ranges      — full per-type {min_ft, max_ft} map (every type),
+                           used by the post-classification size filter.
     """
     if not isinstance(payload, dict):
         payload = {}
@@ -348,12 +445,15 @@ def resolve_config(payload):
     if not isinstance(source_id, str) or not source_id:
         source_id = None
 
+    size_ranges = resolve_size_ranges(config)
+
     return {
         "params":           params,
         "environment":      environment,
         "structure_types":  structure_types,
         "selected_classes": selected_classes,
         "source_id":        source_id,
+        "size_ranges":      size_ranges,
     }
 
 
@@ -1183,6 +1283,120 @@ def _nms_regions(regions, params):
 
 
 # ---------------------------------------------------------------------------
+# Post-classification size filter
+#
+# Real-world footprint sizing + the size gate. Everything here runs on the
+# already-classified, already-scored regions; it never feeds back into
+# classification or scoring.
+# ---------------------------------------------------------------------------
+
+def _hull_metric_pts(r, cell_x_m, cell_y_m):
+    """Convex hull of the region footprint in GROUND METRES, as (x_m, y_m).
+
+    Pixel coords are converted to ground metres up front using the source's
+    Mercator-corrected per-axis sample distance (cell_x_m for columns,
+    cell_y_m for rows), so all subsequent distance maths is true ground
+    distance regardless of the raster's pixel aspect. Over a drawn search box
+    (≤ a few km) this equals the great-circle distance between the same two
+    points to far better than 0.1 %, so we measure on the projected hull
+    rather than re-deriving haversine per vertex.
+
+    Degenerate (collinear / <3 pt) footprints can't form a hull; we fall back
+    to the metric bounding-box corners, which is both cheap and a safe bound.
+    """
+    xs_m = r["xs"].astype(np.float64) * cell_x_m
+    ys_m = r["ys"].astype(np.float64) * cell_y_m
+    pts = np.stack([xs_m, ys_m], axis=1)
+    if len(pts) >= 3:
+        try:
+            hull = ConvexHull(pts)
+            return pts[hull.vertices]
+        except QhullError:
+            pass
+    ymin, xmin, yend, xend = r["bbox_px"]
+    bx0, bx1 = xmin * cell_x_m, (xend - 1) * cell_x_m
+    by0, by1 = ymin * cell_y_m, (yend - 1) * cell_y_m
+    return np.array([[bx0, by0], [bx1, by0], [bx1, by1], [bx0, by1]],
+                    dtype=np.float64)
+
+
+def _feret_max_m(hull_pts):
+    """Maximum caliper diameter (longest extent) of a hull, in metres."""
+    n = len(hull_pts)
+    if n < 2:
+        return 0.0
+    best = 0.0
+    for i in range(n):
+        d = np.hypot(hull_pts[:, 0] - hull_pts[i, 0],
+                     hull_pts[:, 1] - hull_pts[i, 1])
+        m = float(d.max())
+        if m > best:
+            best = m
+    return best
+
+
+def _feret_min_width_m(hull_pts):
+    """Minimum caliper width of a hull, in metres (rotating-calipers).
+
+    The min-width support line of a convex polygon is parallel to one of its
+    edges, so we take, for each edge, the perpendicular span of all vertices
+    and return the smallest. `hull_pts` is assumed convex and ordered (as
+    ConvexHull.vertices returns); the bbox-corner fallback is convex too.
+    """
+    n = len(hull_pts)
+    if n < 3:
+        # A line/point has no meaningful width — fall back to its length so a
+        # sliver isn't auto-passed by a zero width sneaking under min_ft.
+        return _feret_max_m(hull_pts)
+    best = float("inf")
+    for i in range(n):
+        a = hull_pts[i]
+        b = hull_pts[(i + 1) % n]
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(ex, ey)
+        if length < 1e-9:
+            continue
+        # Unit normal to the edge; project every vertex onto it.
+        nx, ny = -ey / length, ex / length
+        proj = (hull_pts[:, 0] - a[0]) * nx + (hull_pts[:, 1] - a[1]) * ny
+        width = float(proj.max() - proj.min())
+        if width < best:
+            best = width
+    return best if math.isfinite(best) else _feret_max_m(hull_pts)
+
+
+def _region_size_ft(r, cell_x_m, cell_y_m, measure):
+    """Real-world size of a region's footprint in feet, per `measure`."""
+    hull_pts = _hull_metric_pts(r, cell_x_m, cell_y_m)
+    size_m = (_feret_min_width_m(hull_pts) if measure == "width"
+              else _feret_max_m(hull_pts))
+    return float(size_m * _M_TO_FT)
+
+
+def _filter_regions_by_size(regions, size_ranges, cell_x_m, cell_y_m):
+    """Drop regions whose footprint is outside their type's [min_ft, max_ft].
+
+    Annotates every region (kept or not, for traceability) with `size_ft` +
+    `size_measure`, then keeps only those inside the configured band. A region
+    whose class maps to no known structure type (shouldn't happen — extraction
+    is already class-filtered) is passed through unfiltered.
+    """
+    if not regions:
+        return regions
+    kept = []
+    for r in regions:
+        tkey = _CLASS_TO_STRUCTURE_TYPE.get(r["class_id"])
+        measure = SIZE_MEASURE.get(tkey, "longest")
+        size_ft = _region_size_ft(r, cell_x_m, cell_y_m, measure)
+        r["size_ft"] = size_ft
+        r["size_measure"] = measure
+        rng = size_ranges.get(tkey) if tkey else None
+        if rng is None or (rng["min_ft"] <= size_ft <= rng["max_ft"]):
+            kept.append(r)
+    return kept
+
+
+# ---------------------------------------------------------------------------
 # Composite pass
 # ---------------------------------------------------------------------------
 
@@ -1503,6 +1717,7 @@ def run_spotfinder(payload):
         cfg = resolve_config(payload)
         params = cfg["params"]
         selected_classes = cfg["selected_classes"]
+        size_ranges = cfg["size_ranges"]
 
         yield progress(0.5, "Resolving data source…")
         source, native_res_m, coverage = _resolve_source(
@@ -1565,6 +1780,16 @@ def run_spotfinder(payload):
         # ── NMS + composites (88 → 94 %) ──
         yield progress(86.0, "Suppressing duplicates…")
         regions = _nms_regions(regions, params)
+
+        # ── Size filter (88 %) ──
+        # Post-classification output gate: detection/scoring/NMS above ran
+        # unchanged; here we drop regions whose real-world footprint is
+        # outside the per-type [min_ft, max_ft]. Done BEFORE composites and
+        # the heatmap so every downstream artifact reflects the same set the
+        # user will see.
+        yield progress(88.0, "Applying size filter…")
+        regions = _filter_regions_by_size(
+            regions, size_ranges, cell_x_m, cell_y_m)
 
         yield progress(90.0, "Clustering composites…")
         composites_raw = _composite_pass(regions, cell_x_m, cell_y_m, params)
@@ -1632,6 +1857,11 @@ def run_spotfinder(payload):
                                          else _safe_finite(length_m),
                 "aspect_deg":       None if aspect_deg is None
                                          else _safe_finite(aspect_deg),
+                # Footprint size used by the size filter, in feet, plus which
+                # measure produced it ("longest" caliper diameter for compact
+                # types, "width" min caliper for elongated types).
+                "size_ft":          _safe_finite(r.get("size_ft")),
+                "size_measure":     r.get("size_measure", "longest"),
             }
 
             regions_out.append({
@@ -1703,6 +1933,10 @@ def run_spotfinder(payload):
                 "environment":     cfg["environment"],
                 "structure_types": list(cfg["structure_types"]),
                 "source":          source.id,
+                # Full per-type size config this run was produced with, so a
+                # saved/renamed run remembers exactly what size constraints
+                # shaped it (the map page surfaces these in the run settings).
+                "size_ranges":     {k: dict(v) for k, v in size_ranges.items()},
             },
             "heatmap_png_url": heatmap_url,
             "heatmap_corners": [

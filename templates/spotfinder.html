@@ -83,6 +83,40 @@
                     At least one is required.
                 </p>
             </div>
+
+            <!-- Size range: one dual-handle slider + min/max ft inputs per
+                 ENABLED structure type, built by spotfinder.js. Collapsible
+                 (collapsed by default) so six rows don't make the card tall;
+                 a row hides when its structure type is unchecked above. -->
+            <div class="sf-config-field sf-config-field-wide sf-size-field">
+                <div class="sf-size-header">
+                    <button type="button" class="sf-size-toggle" id="sf-size-toggle"
+                            aria-expanded="false" aria-controls="sf-size-body">
+                        <svg class="sf-size-chevron" width="12" height="12"
+                             viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2.5" stroke-linecap="round"
+                             stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                        <span class="field-label">Size range</span>
+                        <span class="sf-size-summary" id="sf-size-summary">Defaults</span>
+                    </button>
+                    <button type="button" class="sf-size-reset" id="sf-size-reset"
+                            title="Reset every size range to its default">
+                        Reset to defaults
+                    </button>
+                </div>
+                <div class="sf-size-body" id="sf-size-body" hidden>
+                    <div class="sf-size-rows" id="sf-cfg-size-rows"></div>
+                    <p class="field-hint">
+                        Real-world footprint size in feet. Compact types
+                        (pinnacle, saddle, hole) are measured by their longest
+                        extent; elongated types (mound, ledge, channel) by their
+                        cross-feature width. Spots outside a type's range are
+                        dropped from results.
+                    </p>
+                </div>
+            </div>
         </div>
     </section>
 

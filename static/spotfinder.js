@@ -70,16 +70,33 @@
               hint: "Looser. Surfaces subtle structure that stands out "
                   + "against otherwise featureless ground." },
         ],
-        // key must match a STRUCTURE_TYPES key on the backend.
+        // key must match a STRUCTURE_TYPES key on the backend. defMin/defMax
+        // mirror DEFAULT_SIZE_RANGES in src/spotfinder.py; `measure` mirrors
+        // SIZE_MEASURE ("longest" = longest footprint extent, "width" =
+        // cross-feature width — see resolve_size_ranges). `uiMax` is the
+        // slider's top end (also clamps the numeric inputs); pick it above the
+        // default max so there's room to widen a range per trip.
         structures: [
-            { key: "pinnacle", label: "Pinnacle",     color: "rgb(255,130,90)" },
-            { key: "mound",    label: "Mound / hump", color: "rgb(255,200,90)" },
-            { key: "ledge",    label: "Ledge",        color: "rgb(255,220,130)" },
-            { key: "saddle",   label: "Saddle",       color: "rgb(200,140,255)" },
-            { key: "hole",     label: "Hole",         color: "rgb(120,180,255)" },
-            { key: "channel",  label: "Channel",      color: "rgb(90,200,255)" },
+            { key: "pinnacle", label: "Pinnacle",     color: "rgb(255,130,90)",
+              measure: "longest", defMin:  5, defMax:  60, uiMax: 200 },
+            { key: "mound",    label: "Mound / hump", color: "rgb(255,200,90)",
+              measure: "width",   defMin: 20, defMax: 150, uiMax: 400 },
+            { key: "ledge",    label: "Ledge",        color: "rgb(255,220,130)",
+              measure: "width",   defMin:  5, defMax:  80, uiMax: 300 },
+            { key: "saddle",   label: "Saddle",       color: "rgb(200,140,255)",
+              measure: "longest", defMin: 20, defMax: 200, uiMax: 400 },
+            { key: "hole",     label: "Hole",         color: "rgb(120,180,255)",
+              measure: "longest", defMin: 10, defMax: 150, uiMax: 400 },
+            { key: "channel",  label: "Channel",      color: "rgb(90,200,255)",
+              measure: "width",   defMin: 10, defMax: 100, uiMax: 300 },
         ],
     };
+
+    // Slider granularity + smallest allowed gap between the two handles (ft).
+    const SIZE_STEP_FT = 5;
+    const SIZE_MIN_SPAN_FT = 5;
+    // Short label for the per-row measure tag.
+    const MEASURE_LABEL = { longest: "longest extent", width: "width" };
 
     const $cfgSource     = document.getElementById("sf-cfg-source");
     const $cfgSourceHint = document.getElementById("sf-cfg-source-hint");
@@ -88,6 +105,12 @@
     const $cfgStructs    = document.getElementById("sf-cfg-structures");
     const $cfgStructHint = document.getElementById("sf-cfg-structures-hint");
     const $cfgTag        = document.getElementById("sf-cfg-tag");
+
+    const $sizeRows    = document.getElementById("sf-cfg-size-rows");
+    const $sizeToggle  = document.getElementById("sf-size-toggle");
+    const $sizeBody    = document.getElementById("sf-size-body");
+    const $sizeSummary = document.getElementById("sf-size-summary");
+    const $sizeReset   = document.getElementById("sf-size-reset");
 
     // The source the user had active on the map, carried in the URL.
     const requestedSource = params.get("src");
@@ -122,6 +145,162 @@
         label.append(cb, dot, text);
         $cfgStructs.appendChild(label);
     }
+
+    // ─── Per-type size-range rows ──────────────────────────
+    // One dual-handle slider + numeric min/max (ft) per structure type. Rows
+    // for all six types are built once; a row is hidden when its type is
+    // unchecked above. The slider markup reuses the Layer-Controls depth-range
+    // pattern (.depth-range-slider) so it reads identically to the rest of the
+    // app. State lives in the inputs themselves; readConfig() collects them.
+    const sizeRowState = {};   // key → { row, minRange, maxRange, minNum, maxNum, spec }
+
+    function clampStep(v) {
+        return Math.round(v / SIZE_STEP_FT) * SIZE_STEP_FT;
+    }
+    // Normalise a (lo, hi) pair to [0, uiMax], step-aligned, with lo + span
+    // <= hi. `changed` says which handle the user just moved, so we push the
+    // OTHER one out of the way rather than fighting the drag.
+    function clampPair(lo, hi, uiMax, changed) {
+        lo = Math.max(0, Math.min(uiMax, clampStep(lo)));
+        hi = Math.max(0, Math.min(uiMax, clampStep(hi)));
+        if (changed === "min") {
+            if (hi < lo + SIZE_MIN_SPAN_FT) hi = Math.min(uiMax, lo + SIZE_MIN_SPAN_FT);
+            if (lo > hi) lo = hi;
+        } else {
+            if (lo > hi - SIZE_MIN_SPAN_FT) lo = Math.max(0, hi - SIZE_MIN_SPAN_FT);
+            if (hi < lo) hi = lo;
+        }
+        return [lo, hi];
+    }
+    function writeRow(st, lo, hi) {
+        st.minRange.value = String(lo);
+        st.maxRange.value = String(hi);
+        st.minNum.value   = String(lo);
+        st.maxNum.value   = String(hi);
+    }
+    function onSizeInput(key, which, ev) {
+        const st = sizeRowState[key];
+        if (!st) return;
+        let lo = parseInt(st.minRange.value, 10);
+        let hi = parseInt(st.maxRange.value, 10);
+        const v = parseInt(ev.target.value, 10);
+        if (Number.isFinite(v)) {
+            if (which === "min") lo = v; else hi = v;
+        }
+        if (!Number.isFinite(lo)) lo = st.spec.defMin;
+        if (!Number.isFinite(hi)) hi = st.spec.defMax;
+        [lo, hi] = clampPair(lo, hi, st.spec.uiMax, which);
+        writeRow(st, lo, hi);
+        updateSizeSummary();
+    }
+
+    for (const s of SF_CONFIG.structures) {
+        const row = document.createElement("div");
+        row.className = "sf-size-row";
+        row.dataset.key = s.key;
+        row.innerHTML = `
+            <div class="sf-size-row-head">
+                <span class="sf-check-dot" style="background:${s.color}"></span>
+                <span class="sf-size-row-label">${s.label}</span>
+                <span class="sf-size-row-measure">${MEASURE_LABEL[s.measure] || ""}</span>
+            </div>
+            <div class="sf-size-controls">
+                <div class="depth-range-slider sf-size-slider">
+                    <input type="range" class="slider depth-range-input sf-size-min"
+                           min="0" max="${s.uiMax}" step="${SIZE_STEP_FT}"
+                           value="${s.defMin}"
+                           aria-label="${s.label} minimum size (feet)">
+                    <input type="range" class="slider depth-range-input sf-size-max"
+                           min="0" max="${s.uiMax}" step="${SIZE_STEP_FT}"
+                           value="${s.defMax}"
+                           aria-label="${s.label} maximum size (feet)">
+                </div>
+                <div class="sf-size-inputs">
+                    <input type="number" class="sf-size-num sf-size-num-min"
+                           min="0" max="${s.uiMax}" step="${SIZE_STEP_FT}"
+                           value="${s.defMin}"
+                           aria-label="${s.label} minimum size (feet)">
+                    <span class="sf-size-dash">–</span>
+                    <input type="number" class="sf-size-num sf-size-num-max"
+                           min="0" max="${s.uiMax}" step="${SIZE_STEP_FT}"
+                           value="${s.defMax}"
+                           aria-label="${s.label} maximum size (feet)">
+                    <span class="sf-size-unit">ft</span>
+                </div>
+            </div>`;
+        $sizeRows.appendChild(row);
+
+        const st = {
+            row,
+            spec:     s,
+            minRange: row.querySelector(".sf-size-min"),
+            maxRange: row.querySelector(".sf-size-max"),
+            minNum:   row.querySelector(".sf-size-num-min"),
+            maxNum:   row.querySelector(".sf-size-num-max"),
+        };
+        sizeRowState[s.key] = st;
+
+        // Sliders clamp live as they drag. Numerics normalise on change
+        // (blur / Enter) only — clamping every keystroke would fight someone
+        // typing "120" (it'd reformat at "1", then "12", …).
+        st.minRange.addEventListener("input",  (e) => onSizeInput(s.key, "min", e));
+        st.maxRange.addEventListener("input",  (e) => onSizeInput(s.key, "max", e));
+        st.minNum.addEventListener("change", (e) => onSizeInput(s.key, "min", e));
+        st.maxNum.addEventListener("change", (e) => onSizeInput(s.key, "max", e));
+    }
+
+    function isRowDefault(s) {
+        const st = sizeRowState[s.key];
+        return parseInt(st.minRange.value, 10) === s.defMin
+            && parseInt(st.maxRange.value, 10) === s.defMax;
+    }
+    function updateSizeSummary() {
+        const n = SF_CONFIG.structures.filter((s) => !isRowDefault(s)).length;
+        $sizeSummary.textContent = n === 0 ? "Defaults" : `${n} customized`;
+        $sizeSummary.classList.toggle("sf-size-summary-on", n > 0);
+    }
+    // A size row is shown only while its structure type is targeted. Unchecked
+    // → the row greys out and stops responding (still in the DOM so its value
+    // is preserved if the user re-checks the type).
+    function syncSizeRowVisibility() {
+        const on = new Set(selectedStructures());
+        for (const s of SF_CONFIG.structures) {
+            const st = sizeRowState[s.key];
+            const enabled = on.has(s.key);
+            st.row.classList.toggle("disabled", !enabled);
+            for (const el of [st.minRange, st.maxRange, st.minNum, st.maxNum]) {
+                el.disabled = !enabled;
+            }
+        }
+    }
+    function resetSizeRanges() {
+        for (const s of SF_CONFIG.structures) {
+            writeRow(sizeRowState[s.key], s.defMin, s.defMax);
+        }
+        updateSizeSummary();
+    }
+    // Collect every type's current range (all six, regardless of selection),
+    // so a saved run records the complete size configuration — matching the
+    // backend, which also keeps a full per-type map.
+    function collectSizeRanges() {
+        const out = {};
+        for (const s of SF_CONFIG.structures) {
+            const st = sizeRowState[s.key];
+            out[s.key] = {
+                min_ft: parseInt(st.minRange.value, 10),
+                max_ft: parseInt(st.maxRange.value, 10),
+            };
+        }
+        return out;
+    }
+
+    $sizeToggle.addEventListener("click", () => {
+        const open = $sizeToggle.getAttribute("aria-expanded") === "true";
+        $sizeToggle.setAttribute("aria-expanded", open ? "false" : "true");
+        $sizeBody.hidden = open;
+    });
+    $sizeReset.addEventListener("click", resetSizeRanges);
+
     function selectedStructures() {
         return Array.from($cfgStructs.querySelectorAll("input:checked"))
                     .map(c => c.value);
@@ -153,6 +332,7 @@
     $cfgStructs.addEventListener("change", () => {
         syncStructuresValidity();
         syncCfgTag();
+        syncSizeRowVisibility();
         updateRunGate();
     });
 
@@ -200,6 +380,7 @@
             environment:     $cfgEnv.value,
             structure_types: selectedStructures(),
             source:          $cfgSource.value || null,
+            size_ranges:     collectSizeRanges(),
         };
     }
     function canRun() {
@@ -209,6 +390,8 @@
     syncEnvHint();
     syncStructuresValidity();
     syncCfgTag();
+    syncSizeRowVisibility();
+    updateSizeSummary();
 
     function fmtLatLng(lat, lng) {
         const ns = lat >= 0 ? "N" : "S";

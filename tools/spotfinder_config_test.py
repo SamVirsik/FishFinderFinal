@@ -24,9 +24,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.spotfinder import (   # noqa: E402
     DEFAULT_ENVIRONMENT, DEFAULT_PARAMS, DEFAULT_STRUCTURE_TYPES,
+    DEFAULT_SIZE_RANGES, SIZE_FT_ABS_MAX, SIZE_MEASURE,
     ENVIRONMENT_MODES, STRUCTURE_TYPES,
-    CLASS_LEDGE, CLASS_PINNACLE,
-    _extract_regions, resolve_config,
+    CLASS_CHANNEL, CLASS_LEDGE, CLASS_PINNACLE,
+    _extract_regions, _filter_regions_by_size, _region_size_ft,
+    resolve_config, resolve_size_ranges,
 )
 
 
@@ -208,6 +210,127 @@ def test_run_spotfinder_structure_filter_excludes_unselected():
                            "structure_types": ["pinnacle"]})
     classes = {r["class"] for r in res["regions"]}
     assert "hole" not in classes, f"hole leaked through filter: {classes}"
+
+
+# ── resolve_config: size ranges ───────────────────────────────────────
+
+def test_size_ranges_default_is_full_per_type_map():
+    sr = resolve_config({})["size_ranges"]
+    assert set(sr.keys()) == set(DEFAULT_SIZE_RANGES.keys())
+    for k, v in DEFAULT_SIZE_RANGES.items():
+        assert sr[k]["min_ft"] == v["min_ft"]
+        assert sr[k]["max_ft"] == v["max_ft"]
+
+
+def test_size_ranges_partial_override_keeps_other_defaults():
+    sr = resolve_config(
+        {"config": {"size_ranges": {"pinnacle": {"min_ft": 8, "max_ft": 40}}}}
+    )["size_ranges"]
+    assert sr["pinnacle"] == {"min_ft": 8.0, "max_ft": 40.0}
+    # An untouched type still gets its default.
+    assert sr["hole"]["min_ft"] == DEFAULT_SIZE_RANGES["hole"]["min_ft"]
+    assert sr["hole"]["max_ft"] == DEFAULT_SIZE_RANGES["hole"]["max_ft"]
+
+
+def test_size_ranges_inverted_min_max_swapped():
+    sr = resolve_config(
+        {"config": {"size_ranges": {"hole": {"min_ft": 200, "max_ft": 50}}}}
+    )["size_ranges"]
+    assert sr["hole"]["min_ft"] == 50.0
+    assert sr["hole"]["max_ft"] == 200.0
+
+
+def test_size_ranges_garbage_value_falls_back():
+    sr = resolve_config(
+        {"config": {"size_ranges": {"ledge": {"min_ft": "abc"}}}}
+    )["size_ranges"]
+    assert sr["ledge"]["min_ft"] == DEFAULT_SIZE_RANGES["ledge"]["min_ft"]
+    assert sr["ledge"]["max_ft"] == DEFAULT_SIZE_RANGES["ledge"]["max_ft"]
+
+
+def test_size_ranges_clamped_to_absolute_bounds():
+    sr = resolve_config(
+        {"config": {"size_ranges": {"saddle": {"min_ft": -10, "max_ft": 99999}}}}
+    )["size_ranges"]
+    assert sr["saddle"]["min_ft"] == 0.0
+    assert sr["saddle"]["max_ft"] == SIZE_FT_ABS_MAX
+
+
+# ── _filter_regions_by_size: the post-classification size gate ─────────
+
+def _block_region(class_id, h_cells, w_cells):
+    """A solid rectangular footprint of (h_cells × w_cells) pixels at (0,0)."""
+    ys, xs = np.mgrid[0:h_cells, 0:w_cells]
+    return {
+        "class_id": class_id,
+        "ys": ys.ravel(),
+        "xs": xs.ravel(),
+        "bbox_px": (0, 0, h_cells, w_cells),
+    }
+
+
+def test_filter_drops_oversize_keeps_in_range():
+    ranges = resolve_size_ranges({})   # defaults: pinnacle 5–60 ft
+    small = _block_region(CLASS_PINNACLE, 10, 10)   # ~42 ft longest extent
+    big   = _block_region(CLASS_PINNACLE, 25, 25)   # ~111 ft longest extent
+    kept = _filter_regions_by_size([small, big], ranges, 1.0, 1.0)
+    assert any(r is small for r in kept), "in-range pinnacle should survive"
+    assert not any(r is big for r in kept), "oversize pinnacle should be dropped"
+    # Every region is annotated, kept or not.
+    assert small["size_measure"] == "longest"
+    assert big["size_ft"] > ranges["pinnacle"]["max_ft"]
+
+
+def test_filter_uses_width_not_length_for_channel():
+    ranges = resolve_size_ranges({})   # channel default 10–100 ft
+    strip = _block_region(CLASS_CHANNEL, 120, 10)   # long + thin
+    longest = _region_size_ft(strip, 1.0, 1.0, "longest")
+    width   = _region_size_ft(strip, 1.0, 1.0, "width")
+    assert width < longest, "width must be the short cross-feature dimension"
+    # Length blows past the max, but width sits inside it — so a channel that
+    # would be dropped under 'longest' is kept under 'width'.
+    assert longest > ranges["channel"]["max_ft"]
+    assert ranges["channel"]["min_ft"] <= width <= ranges["channel"]["max_ft"]
+    kept = _filter_regions_by_size([strip], ranges, 1.0, 1.0)
+    assert any(r is strip for r in kept)
+    assert strip["size_measure"] == "width"
+    assert SIZE_MEASURE["channel"] == "width"
+
+
+# ── run_spotfinder: size filter end-to-end ────────────────────────────
+
+def test_run_spotfinder_echoes_size_ranges():
+    res = _run_end_to_end({
+        "structure_types": ["pinnacle", "hole"],
+        "size_ranges": {"pinnacle": {"min_ft": 3, "max_ft": 800}},
+    })
+    sr = res["config"]["size_ranges"]
+    assert set(sr.keys()) == set(DEFAULT_SIZE_RANGES.keys())
+    assert sr["pinnacle"] == {"min_ft": 3.0, "max_ft": 800.0}
+
+
+def test_run_spotfinder_size_filter_annotates_and_filters():
+    # Wide-open ranges: the synthetic pinnacle + pit survive and each region
+    # carries the size it was measured at.
+    wide = _run_end_to_end({
+        "environment": "flat",
+        "structure_types": ["pinnacle", "hole"],
+        "size_ranges": {"pinnacle": {"min_ft": 0, "max_ft": 5000},
+                        "hole":     {"min_ft": 0, "max_ft": 5000}},
+    })
+    assert wide["regions"], "wide-open size range should keep regions"
+    for r in wide["regions"]:
+        assert r["metrics"]["size_ft"] > 0
+        assert r["metrics"]["size_measure"] in ("longest", "width")
+
+    # An impossibly tight max drops everything — the gate is real.
+    tight = _run_end_to_end({
+        "environment": "flat",
+        "structure_types": ["pinnacle", "hole"],
+        "size_ranges": {"pinnacle": {"min_ft": 0, "max_ft": 1},
+                        "hole":     {"min_ft": 0, "max_ft": 1}},
+    })
+    assert tight["regions"] == [], "a 1 ft max should drop all regions"
 
 
 def _run_all():

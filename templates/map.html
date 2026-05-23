@@ -366,12 +366,11 @@
         <span class="sf-overlay-toggle-label">Overlay</span>
     </button>
 
-    <!-- Spotfinder map legend. Populated by map.js from CLASS_RGB so the
-         swatches always match the markers + polygons. Shown only while at
-         least one run is active (same signal as the overlay toggle), and
-         hidden when the overlay is toggled off. The "cluster" row explains
-         the dashed hulls that group nearby spots. -->
-    <div id="sf-legend" class="sf-legend" hidden aria-label="Spotfinder legend"></div>
+    <!-- Spotfinder spot tooltip. A single reusable node, positioned by
+         map.js at the cursor on marker hover (view.hitTest). Lives on
+         <body> with position:fixed so the map container's edges never
+         clip it. pointer-events:none keeps it from blocking hover/click. -->
+    <div id="sf-spot-tooltip" class="sf-spot-tooltip" role="tooltip" aria-hidden="true"></div>
 
     <aside id="spotfinder-panel" class="spotfinder-panel collapsed"
            role="dialog" aria-label="Spotfinder">

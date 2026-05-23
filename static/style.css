@@ -1069,64 +1069,52 @@ input, select {
     color: var(--text-dim);
 }
 
-/* Spotfinder map legend. Bottom-left card sitting just above the FAB row.
-   Shown only while the overlay is visible (map.js toggles [hidden]). Makes
-   every marker colour + the dashed cluster hull self-explanatory. */
-.sf-legend {
+/* Spotfinder spot hover tooltip. Lives on <body>, position:fixed, moved
+   to the cursor by map.js on marker hover. pointer-events:none so it never
+   intercepts the hover/click it's describing, and a fast fade keeps it
+   feeling attached to the cursor rather than lagging behind it. */
+.sf-spot-tooltip {
     position: fixed;
-    left: 16px;
-    bottom: 82px;
-    z-index: 939;
-    min-width: 168px;
-    padding: 12px 14px;
-    background: rgba(20, 22, 32, 0.88);
+    left: 0;
+    top: 0;
+    z-index: 950;
+    max-width: 240px;
+    padding: 7px 10px;
+    background: rgba(20, 22, 32, 0.94);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
     font-size: 12px;
     color: var(--text);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 0.08s ease, transform 0.08s ease;
 }
 
-.sf-legend[hidden] { display: none; }
+.sf-spot-tooltip.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
 
-.sf-legend-title {
-    font-size: 10.5px;
+.sf-tip-title {
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
+    font-size: 12.5px;
+    letter-spacing: -0.005em;
+}
+
+.sf-tip-row {
     color: var(--text-dim);
-    margin-bottom: 8px;
+    font-variant-numeric: tabular-nums;
+    margin-top: 2px;
 }
 
-.sf-legend-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 0;
-}
-
-.sf-legend-dot {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
-}
-
-/* Matches COMPOSITE_FILL_SYMBOL in map.js — yellow short-dash. */
-.sf-legend-cluster {
-    width: 13px;
-    height: 9px;
-    flex-shrink: 0;
-    border: 1.5px dashed rgb(255, 215, 100);
-    border-radius: 2px;
-}
-
-.sf-legend-label {
-    color: var(--text);
-    line-height: 1.3;
+.sf-tip-tags {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 2px;
 }
 
 /* Eyebrow chip — appears above the panel heading and the page title.
@@ -1476,6 +1464,168 @@ input, select {
 @media (max-width: 700px) {
     .sf-config {
         grid-template-columns: 1fr;
+    }
+}
+
+/* ─── Per-type size range ─────────────────────────────────────
+   Collapsible subsection under Target structures. Header is a toggle on the
+   left (chevron + label + summary) with a "Reset to defaults" affordance on
+   the right. Each row pairs the shared .depth-range-slider dual-handle slider
+   with numeric min/max ft fields. Reuses the same border / accent / radius
+   tokens as .sf-check so it reads as one card. */
+.sf-size-field {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+}
+
+.sf-size-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.sf-size-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+}
+
+.sf-size-toggle .field-label {
+    margin: 0;
+    cursor: pointer;
+}
+
+.sf-size-chevron {
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+    flex-shrink: 0;
+}
+
+.sf-size-toggle[aria-expanded="true"] .sf-size-chevron {
+    transform: rotate(90deg);
+}
+
+.sf-size-summary {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+}
+
+.sf-size-summary-on {
+    color: var(--accent);
+}
+
+.sf-size-reset {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-faint);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: color 0.15s ease;
+}
+
+.sf-size-reset:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.sf-size-body {
+    margin-top: 12px;
+}
+
+.sf-size-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.sf-size-row {
+    transition: opacity 0.15s ease;
+}
+
+.sf-size-row.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+.sf-size-row-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 2px;
+}
+
+.sf-size-row-label {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
+}
+
+.sf-size-row-measure {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-left: auto;
+}
+
+/* Slider + numeric fields sit side by side; on a narrow card they stack. */
+.sf-size-controls {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 14px;
+}
+
+.sf-size-slider {
+    min-width: 0;
+}
+
+.sf-size-inputs {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sf-size-num {
+    width: 56px;
+    padding: 5px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.sf-size-num:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.sf-size-dash {
+    color: var(--text-faint);
+}
+
+.sf-size-unit {
+    font-size: 11.5px;
+    color: var(--text-faint);
+}
+
+@media (max-width: 540px) {
+    .sf-size-controls {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+    .sf-size-inputs {
+        justify-content: flex-end;
     }
 }
 
@@ -2071,11 +2221,69 @@ input, select {
     gap: 4px;
 }
 
+.sf-run-card-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
 .sf-run-card-title {
     font-size: 13.5px;
     font-weight: 600;
     color: var(--text);
     letter-spacing: -0.005em;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Pencil affordance. Hidden until the card is hovered/focused (same
+   reveal as the delete button) so the resting card stays clean. */
+.sf-run-card-rename {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease,
+                background 0.15s ease, border-color 0.15s ease;
+}
+
+.sf-run-card:hover .sf-run-card-rename,
+.sf-run-card:focus-within .sf-run-card-rename {
+    opacity: 1;
+}
+
+.sf-run-card-rename:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--border-strong);
+}
+
+/* Inline name editor — replaces the title <span> while editing. */
+.sf-run-card-title-edit {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.005em;
+    padding: 2px 6px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--spotfinder-accent);
+    border-radius: var(--radius-sm);
+    outline: none;
 }
 
 .sf-run-card-meta {
@@ -2096,6 +2304,67 @@ input, select {
     font-weight: 600;
     font-size: 11.5px;
     font-variant-numeric: tabular-nums;
+}
+
+/* Expandable per-run settings readout (environment + targeted structures +
+   size ranges). Collapsed by default so cards stay compact. */
+.sf-run-card-settings-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    transition: color 0.15s ease;
+}
+
+.sf-run-card-settings-toggle:hover {
+    color: var(--spotfinder-accent);
+}
+
+.sf-run-card-settings-chevron {
+    transition: transform 0.15s ease;
+}
+
+.sf-run-card-settings-toggle[aria-expanded="true"] .sf-run-card-settings-chevron {
+    transform: rotate(90deg);
+}
+
+.sf-run-card-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.sf-run-setting {
+    display: flex;
+    gap: 8px;
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+.sf-run-setting-key {
+    flex-shrink: 0;
+    width: 78px;
+    color: var(--text-faint);
+}
+
+.sf-run-setting-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.sf-run-setting-val em {
+    color: var(--text-faint);
+    font-style: normal;
 }
 
 
