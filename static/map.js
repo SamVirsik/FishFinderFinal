@@ -102,18 +102,22 @@ const _sourcesReady = fetch(`${baseurl}/sources`, { cache: 'no-store' })
 // Also kicked off at module load so it overlaps the AMD require()
 // dependency download. Failure-mode is different from /sources: the
 // basemap grid is purely cosmetic — losing it must not leave the user
-// without basemap controls. We fall back to a hardcoded six-Esri list
-// so the switcher remains useful even if the Flask backend is dead.
+// without basemap controls. We fall back to a hardcoded keyless USGS
+// list so the switcher remains useful even if the Flask backend is dead.
+// The first entry's id MUST match DEFAULT_BASEMAP_ID below and the
+// registry default in src/basemap_sources.py.
 const _BASEMAP_FALLBACK = {
     basemaps: [
-        { id: "dark-gray-vector", display_name: "Dark",        provider: "esri", value: "dark-gray-vector", attribution: "", max_zoom: null, tile_size: null, tooltip: null },
-        { id: "streets-vector",   display_name: "Streets",     provider: "esri", value: "streets-vector",   attribution: "", max_zoom: null, tile_size: null, tooltip: null },
-        { id: "satellite",        display_name: "Satellite",   provider: "esri", value: "satellite",        attribution: "", max_zoom: null, tile_size: null, tooltip: null },
-        { id: "hybrid",           display_name: "Hybrid",      provider: "esri", value: "hybrid",           attribution: "", max_zoom: null, tile_size: null, tooltip: null },
-        { id: "oceans",           display_name: "Oceans",      provider: "esri", value: "oceans",           attribution: "", max_zoom: null, tile_size: null, tooltip: null },
-        { id: "topo-vector",      display_name: "Topographic", provider: "esri", value: "topo-vector",      attribution: "", max_zoom: null, tile_size: null, tooltip: null },
+        { id: "usgs-imagery-topo", display_name: "USGS Imagery", provider: "arcgis_rest", value: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer", attribution: "USGS, USDA", max_zoom: null, tile_size: null, tooltip: "Aerial imagery with topo labels. Public domain, no key." },
+        { id: "usgs-topo",         display_name: "USGS Topo",    provider: "arcgis_rest", value: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer",        attribution: "USGS, USDA", max_zoom: null, tile_size: null, tooltip: "USGS topographic map. Public domain, no key." },
+        { id: "usgs-aerial",       display_name: "USGS Aerial",  provider: "arcgis_rest", value: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer",  attribution: "USGS, USDA", max_zoom: null, tile_size: null, tooltip: "High-res NAIP aerial; open water shows as blank." },
     ],
 };
+// Cold-load default. Must match an id in the registry above / the server
+// registry. The map is constructed with this basemap before /basemaps lands.
+const DEFAULT_BASEMAP_ID = "usgs-imagery-topo";
+const DEFAULT_BASEMAP_URL =
+    "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer";
 const _basemapsReady = fetch(`${baseurl}/basemaps`, { cache: 'no-store' })
     .then(r => r.ok ? r.json()
                     : Promise.reject(new Error(`/basemaps HTTP ${r.status}`)))
@@ -703,9 +707,53 @@ require([
     const measureLayer   = new GraphicsLayer({ listMode: "hide" });
     const spotfinderLayer = new GraphicsLayer({ listMode: "hide" });
 
+    // Cold-load basemap: a keyless USGS National Map TileLayer wrapped in
+    // a Basemap object. Built inline (rather than swapped in after the
+    // registry fetch) so the user sees a basemap from the first frame.
+    // The registry response later re-renders the grid and lets the user
+    // switch; this is just the starting point.
     const map = new EsriMap({
-        basemap: "dark-gray-vector",
+        basemap: new Basemap({
+            baseLayers: [new TileLayer({
+                url: DEFAULT_BASEMAP_URL,
+                copyright: "USGS, USDA",
+            })],
+        }),
         layers: [markerLayer, measureLayer, spotfinderLayer],
+    });
+
+    // ─── Zoom ceiling + over-zoom ──────────────────────────
+    //
+    // The default MapView constraints are derived from the basemap's tile
+    // LODs. The keyless USGS National Map services only publish cached
+    // levels to ~z16, so without an override the view refused to zoom any
+    // deeper than the basemap — even though the NOAA bathymetry endpoints
+    // happily serve (upsampled) tiles far past that. Two tunables fix it:
+    //
+    //   BATHY_MAX_ZOOM — the deepest level at which we still FETCH real
+    //     bathymetry tiles. The CUDEM/DEM sources resolve ~3 m data, so
+    //     past ~z16 the server is already interpolating; z20 is a sane
+    //     ceiling where tiles are still sharp and never blank (every NOAA
+    //     source in the registry serves to at least this level for the
+    //     Keys, and the default dem-all/dem-tiles go to z22).
+    //
+    //   VIEW_MAX_ZOOM — how far the user may zoom *past* the deepest
+    //     fetched tile. Beyond BATHY_MAX_ZOOM neither the bathymetry layer
+    //     (its TileInfo is capped, see buildLayer) nor the basemap (capped
+    //     by its service) requests new tiles — ArcGIS instead resamples
+    //     the deepest available tile (canvas over-zoom / magnification).
+    //     That gives fine-grained zoom-in without the map going blank or
+    //     refusing to go deeper.
+    //
+    // `snapToZoom: false` lets the view sit at fractional zoom levels so
+    // the over-zoom range feels continuous rather than stepping in whole
+    // levels. The full-depth WebMercator LOD table (z0–z23) is handed to
+    // the constraints so every zoom level up to VIEW_MAX_ZOOM has a
+    // defined scale — the basemap's shallow LODs no longer cap the view.
+    const BATHY_MAX_ZOOM = 20;
+    const VIEW_MAX_ZOOM  = 22;
+    const fullTileInfo = TileInfo.create({
+        spatialReference: SpatialReference.WebMercator,
     });
 
     const view = new MapView({
@@ -713,7 +761,75 @@ require([
         map,
         center: [-81.083, 24.713],
         zoom: 8,
+        constraints: {
+            lods: fullTileInfo.lods,
+            maxZoom: VIEW_MAX_ZOOM,
+            snapToZoom: false,
+        },
         ui: { components: ["zoom", "attribution"] },
+    });
+
+
+    // ─── Slower wheel zoom ─────────────────────────────────
+    // ArcGIS JS 4.x has no zoom-rate property, so we intercept the wheel
+    // event, suppress the native zoom (stopPropagation), and apply a
+    // smaller zoom step ourselves. WHEEL_ZOOM_STEP = 0.25 is ~half the
+    // native per-notch step, so each scroll moves less and the zoom feels
+    // slower.
+    //
+    // `wheelTargetZoom` accumulates across notches so a fast scroll burst
+    // builds one larger target and each goTo simply retargets the running
+    // animation (ArcGIS interrupts the previous goTo cleanly) rather than
+    // stacking independent animations. It resets to null once an
+    // animation settles.
+    //
+    // The zoom is anchored on the cursor (native feel): the map point
+    // under the pointer stays fixed by nudging the center toward it in
+    // proportion to the zoom change (factor f = 2^Δzoom). NOTE: center
+    // MUST be a Point in the view's spatial reference — passing a raw
+    // [x, y] array makes goTo read it as [lon, lat] in WGS84, which with
+    // Web Mercator metres flings the map off-world (the earlier
+    // "rendering breaks fully" bug).
+    const WHEEL_ZOOM_STEP = 0.25;
+    let wheelTargetZoom = null;
+    // Monotonic id for the in-flight wheel goTo. Issuing a fresh goTo for
+    // a new notch INTERRUPTS the previous one, and ArcGIS REJECTS the
+    // interrupted goTo's promise. We must not let that rejection clear the
+    // accumulated target: if it did, every notch in a fast burst would
+    // reset `wheelTargetZoom` back to the current (mid-animation) zoom, so
+    // the new goTo fights the previous one and the map barely zooms /
+    // appears to stop at an arbitrary level. The id lets `settle` clear the
+    // target only when its goTo is still the latest one — a natural settle
+    // or a non-wheel interruption like a drag — never when a newer notch
+    // has already superseded it.
+    let wheelAnimId = 0;
+    view.on("mouse-wheel", (event) => {
+        event.stopPropagation();
+        const dir = event.deltaY > 0 ? -1 : 1;
+        const z0 = view.zoom;
+        const minZoom = view.constraints.effectiveMinZoom ?? 0;
+        const base = wheelTargetZoom ?? z0;
+        const z1 = Math.max(minZoom, Math.min(VIEW_MAX_ZOOM,
+            base + dir * WHEEL_ZOOM_STEP));
+        if (z1 === base) return;
+        wheelTargetZoom = z1;
+
+        const target = { zoom: z1 };
+        const p = view.toMap({ x: event.x, y: event.y });
+        if (p) {
+            const c = view.center;
+            const f = Math.pow(2, z1 - z0);
+            target.center = new Point({
+                x: p.x + (c.x - p.x) / f,
+                y: p.y + (c.y - p.y) / f,
+                spatialReference: view.spatialReference,
+            });
+        }
+
+        const myAnim = ++wheelAnimId;
+        const settle = () => { if (myAnim === wheelAnimId) wheelTargetZoom = null; };
+        view.goTo(target, { animate: true, duration: 150, easing: "ease-out" })
+            .then(settle, settle);
     });
 
 
@@ -798,10 +914,19 @@ require([
 
     function buildLayer(cfg) {
         return new RasterAnalysisLayer({
+            // Cap the layer's LODs at BATHY_MAX_ZOOM. When the view zooms
+            // past this (up to VIEW_MAX_ZOOM) ArcGIS resamples the deepest
+            // fetched tile rather than calling fetchTile for a level the
+            // server would answer with no-coverage — that's the over-zoom.
             tileInfo: TileInfo.create({
                 spatialReference: SpatialReference.WebMercator,
+                numLODs: BATHY_MAX_ZOOM + 1,
             }),
             spatialReference: SpatialReference.WebMercator,
+            // Bathymetry data is NOAA's — surface it in the attribution
+            // widget. The keyless USGS basemaps carry "USGS, USDA"; this
+            // is the only other attribution the map shows.
+            copyright: "NOAA",
             opacity: parseInt($opacity.value, 10) / 100,
             source:      cfg.source,
             resolution:  cfg.resolution,
@@ -1093,7 +1218,11 @@ require([
         // somehow leaves us without entries.
         const srcMeta = sourcesById[sourceId];
         const zMin = srcMeta ? srcMeta.min_zoom : 0;
-        const zMax = srcMeta ? srcMeta.max_zoom : 22;
+        // Never warm past the layer's tile ceiling: beyond BATHY_MAX_ZOOM
+        // the renderer over-zooms the deepest tile and never requests a
+        // finer one, so prefetching those levels is pure wasted work.
+        const zMax = Math.min(
+            BATHY_MAX_ZOOM, srcMeta ? srcMeta.max_zoom : 22);
         const plan = [];
         const tiers = {
             "ring": zoom <= zMax       ? tilesAroundView(extent, zoom, 1)   : [],
@@ -1448,7 +1577,11 @@ require([
     // mosaic-rule ambiguity entirely.
     function depthSampleParams(lat, lon, source, resolution) {
         const ORIGIN = WEB_MERCATOR_HALF;
-        const z = Math.max(0, Math.min(22,
+        // Clamp to BATHY_MAX_ZOOM, not the raw view zoom: past that the map
+        // is over-zooming the deepest fetched tile, so that is the grid the
+        // on-screen pixel came from. Sampling a finer z than is rendered
+        // would reintroduce the depth-mismatch this approach exists to kill.
+        const z = Math.max(0, Math.min(BATHY_MAX_ZOOM,
             Number.isFinite(view.zoom) ? Math.round(view.zoom) : 10));
         const mx = lon * ORIGIN / 180;
         const myDeg = Math.log(Math.tan((90 + lat) * Math.PI / 360))
@@ -1520,247 +1653,32 @@ require([
     });
 
 
-    // ─── Search w/ autocomplete ────────────────────────────
-    // ArcGIS World Geocoder, anonymous tier — free, no API key.
-    // /suggest gives lightweight typeahead candidates (with magicKey),
-    // findAddressCandidates resolves a magicKey to a precise location.
-    const GEOCODE_BASE   = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer";
-    const KEYS_CENTER    = "-81.2,24.85";              // proximity bias toward Florida Keys (soft — global results still allowed)
-    const SUGGEST_DEBOUNCE_MS = 180;
-    const MAX_SUGGESTIONS     = 6;
-
-    const $search      = document.getElementById("search-input");
-    const $suggestList = document.getElementById("search-suggestions");
-    const $searchClear = document.getElementById("search-clear");
-
-    let suggestSeq          = 0;     // monotonic — latest /suggest fetch wins
-    let resolveSeq          = 0;     // monotonic — latest magicKey resolve wins
-    let currentSuggestions  = [];
-    let activeIdx           = -1;
-    let suggestTimer        = null;
-
-    function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, c => (
-            { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-        ));
-    }
-
-    function setExpanded(open) {
-        $suggestList.hidden = !open;
-        $search.setAttribute("aria-expanded", open ? "true" : "false");
-    }
-
-    function closeSuggest() {
-        setExpanded(false);
-        currentSuggestions = [];
-        activeIdx = -1;
-    }
-
-    function renderSuggestions(items) {
-        currentSuggestions = items;
-        activeIdx = -1;
-        if (!items.length) {
-            $suggestList.innerHTML = `<li class="search-suggestion empty">No results</li>`;
-        } else {
-            $suggestList.innerHTML = items.map((it, i) =>
-                `<li class="search-suggestion" data-idx="${i}" role="option">${escapeHtml(it.text)}</li>`
-            ).join("");
-        }
-        setExpanded(true);
-    }
-
-    function setActive(idx) {
-        const els = $suggestList.querySelectorAll(".search-suggestion[data-idx]");
-        if (!els.length) return;
-        activeIdx = Math.max(0, Math.min(idx, els.length - 1));
-        els.forEach(el => el.classList.remove("active"));
-        els[activeIdx].classList.add("active");
-        els[activeIdx].scrollIntoView({ block: "nearest" });
-    }
-
-    async function fetchSuggestions(text) {
-        const seq = ++suggestSeq;
-        const params = new URLSearchParams({
-            text,
-            f: "json",
-            maxSuggestions: String(MAX_SUGGESTIONS),
-            location: KEYS_CENTER,
-        });
-        try {
-            const resp = await fetch(`${GEOCODE_BASE}/suggest?${params}`);
-            if (seq !== suggestSeq) return;
-            const data = await resp.json();
-            if (seq !== suggestSeq) return;
-            renderSuggestions(data.suggestions || []);
-        } catch (err) {
-            if (seq !== suggestSeq) return;
-            console.error("suggest failed:", err);
-            closeSuggest();
-        }
-    }
-
-    function pickZoomForExtent(extent) {
-        if (!extent) return 13;
-        const dx = Math.abs(extent.xmax - extent.xmin);
-        const dy = Math.abs(extent.ymax - extent.ymin);
-        const span = Math.max(dx, dy);
-        if (span > 1.5)   return 8;   // state / large region
-        if (span > 0.5)   return 10;  // metro
-        if (span > 0.1)   return 12;  // city
-        if (span > 0.02)  return 14;  // neighborhood
-        return 16;                    // single address
-    }
-
-    async function jumpToCandidate(cand) {
-        const lon  = cand.location.x;
-        const lat  = cand.location.y;
-        const zoom = pickZoomForExtent(cand.extent);
-        const point = new Point({ longitude: lon, latitude: lat });
-        await view.goTo({ center: [lon, lat], zoom });
-        lookupDepth(lat, lon, point);
-    }
-
-    async function resolveAndJump(suggestion) {
-        const seq = ++resolveSeq;
-        $search.value = suggestion.text;
-        $searchClear.hidden = false;
-        closeSuggest();
-        const params = new URLSearchParams({
-            f: "json",
-            magicKey: suggestion.magicKey,
-            maxLocations: "1",
-        });
-        try {
-            const resp = await fetch(`${GEOCODE_BASE}/findAddressCandidates?${params}`);
-            if (seq !== resolveSeq) return;
-            const data = await resp.json();
-            if (seq !== resolveSeq) return;
-            const cand = (data.candidates || [])[0];
-            if (!cand) return;
-            await jumpToCandidate(cand);
-        } catch (err) {
-            if (seq !== resolveSeq) return;
-            console.error("resolve failed:", err);
-        }
-    }
-
-    // Fallback: user hits Enter before /suggest results arrive.
-    async function directSearch(text) {
-        const seq = ++resolveSeq;
-        closeSuggest();
-        const params = new URLSearchParams({
-            SingleLine: text,
-            f: "json",
-            maxLocations: "1",
-            location: KEYS_CENTER,
-        });
-        try {
-            const resp = await fetch(`${GEOCODE_BASE}/findAddressCandidates?${params}`);
-            if (seq !== resolveSeq) return;
-            const data = await resp.json();
-            if (seq !== resolveSeq) return;
-            const cand = (data.candidates || [])[0];
-            if (!cand) return;
-            await jumpToCandidate(cand);
-        } catch (err) {
-            if (seq !== resolveSeq) return;
-            console.error("direct search failed:", err);
-        }
-    }
-
-    $search.addEventListener("input", () => {
-        const q = $search.value.trim();
-        $searchClear.hidden = !q;
-        clearTimeout(suggestTimer);
-        if (!q) { closeSuggest(); return; }
-        suggestTimer = setTimeout(() => fetchSuggestions(q), SUGGEST_DEBOUNCE_MS);
-    });
-
-    $search.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowDown") {
-            e.preventDefault();
-            if ($suggestList.hidden && $search.value.trim()) {
-                fetchSuggestions($search.value.trim());
-                return;
-            }
-            setActive(activeIdx + 1);
-        } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            setActive(activeIdx <= 0 ? 0 : activeIdx - 1);
-        } else if (e.key === "Enter") {
-            e.preventDefault();
-            const q = $search.value.trim();
-            if (activeIdx >= 0 && currentSuggestions[activeIdx]) {
-                resolveAndJump(currentSuggestions[activeIdx]);
-            } else if (currentSuggestions.length > 0) {
-                resolveAndJump(currentSuggestions[0]);
-            } else if (q) {
-                directSearch(q);
-            }
-        } else if (e.key === "Escape") {
-            closeSuggest();
-            $search.blur();
-        }
-    });
-
-    // mousedown — fires before the input's blur, so we don't lose the click
-    $suggestList.addEventListener("mousedown", (e) => {
-        const li = e.target.closest(".search-suggestion[data-idx]");
-        if (!li) return;
-        e.preventDefault();
-        const idx = parseInt(li.dataset.idx, 10);
-        if (currentSuggestions[idx]) resolveAndJump(currentSuggestions[idx]);
-    });
-
-    $search.addEventListener("focus", () => {
-        const q = $search.value.trim();
-        if (q && currentSuggestions.length === 0) fetchSuggestions(q);
-        else if (currentSuggestions.length > 0) setExpanded(true);
-    });
-
-    $search.addEventListener("blur", () => {
-        // delay so suggestion-click mousedown has a chance to land first
-        setTimeout(closeSuggest, 120);
-    });
-
-    $searchClear.addEventListener("click", () => {
-        $search.value = "";
-        $searchClear.hidden = true;
-        closeSuggest();
-        $search.focus();
-    });
-
-
     // ─── Basemap switch ────────────────────────────────────
     //
     // The button grid is populated from /basemaps (kicked off at module
     // load — see `_basemapsReady` above). The map itself was already
-    // built with a hardcoded Esri default ("dark-gray-vector") so the
-    // user sees a basemap from the first frame, independent of when
-    // (or whether) the registry response lands. If /basemaps fails the
-    // fallback list of six Esri entries renders instead — the switcher
-    // is never absent.
+    // built with a hardcoded keyless USGS default (DEFAULT_BASEMAP_ID)
+    // so the user sees a basemap from the first frame, independent of
+    // when (or whether) the registry response lands. If /basemaps fails
+    // the fallback list of keyless USGS entries renders instead — the
+    // switcher is never absent.
     //
-    // setBasemap() dispatches by provider:
-    //   - "esri":        string assignment, same behavior as before.
+    // setBasemap() dispatches by provider (all keyless):
+    //   - "arcgis_rest": TileLayer pointed at a USGS National Map
+    //                    MapServer URL. Tile size and max-zoom come from
+    //                    the service's published tile info — we
+    //                    deliberately do NOT override them from the
+    //                    registry. (Not an Esri-hosted basemap; USGS just
+    //                    speaks the ArcGIS REST protocol.)
     //   - "xyz":         WebTileLayer (with TileInfo override when the
-    //                    registry specifies a non-default tile size, so
-    //                    ArcGIS doesn't request the wrong row/col count
-    //                    for a 512px tile source like MapTiler).
-    //   - "arcgis_rest": TileLayer pointed at a MapServer URL. Tile
-    //                    size and max-zoom come from the service's
-    //                    published tile info — we deliberately do NOT
-    //                    override them from the registry.
+    //                    registry specifies a non-default tile size).
+    //                    Reserved for future keyless XYZ providers.
     // Marker / measure / bathymetry layers live in `map.layers` and are
     // untouched by `map.basemap` reassignment, so nothing to clean up.
-    let currentBasemapId = "dark-gray-vector";  // matches the literal at map construction
+    let currentBasemapId = DEFAULT_BASEMAP_ID;  // matches the literal at map construction
     let basemapsById = {};
 
     function setBasemap(entry) {
-        if (entry.provider === "esri") {
-            map.basemap = entry.value;
-            return;
-        }
         if (entry.provider === "xyz") {
             const layerOpts = {
                 urlTemplate: entry.value,
@@ -1821,23 +1739,39 @@ require([
     });
 
 
-    // ─── Sidebar jump-to-coords ────────────────────────────
-    async function sidebarJump() {
-        const lat = parseFloat($sidebarLat.value);
-        const lon = parseFloat($sidebarLon.value);
+    // HTML-escape helper. Used by the Spotfinder run cards / tooltips
+    // below to safely interpolate user- and data-derived strings.
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => (
+            { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+        ));
+    }
+
+
+    // ─── Jump-to-coords (sidebar "Navigate") ───────────────
+    // Keyless replacement for the old place-name search: recenter the map
+    // on a decimal-degree coordinate pair. The control lives solely in the
+    // Tools sidebar now (it used to be mirrored in the topbar).
+    async function goToCoords(latRaw, lonRaw) {
+        const lat = parseFloat(latRaw);
+        const lon = parseFloat(lonRaw);
         if (Number.isNaN(lat) || Number.isNaN(lon)) return;
         if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return;
         const point = new Point({ longitude: lon, latitude: lat });
         await view.goTo({ center: [lon, lat], zoom: Math.max(view.zoom, 11) });
         lookupDepth(lat, lon, point);
     }
-    $sidebarGoto.addEventListener("click", (e) => { e.preventDefault(); sidebarJump(); });
+
+    // Sidebar box
+    $sidebarGoto.addEventListener("click", (e) => {
+        e.preventDefault();
+        goToCoords($sidebarLat.value, $sidebarLon.value);
+    });
     [$sidebarLat, $sidebarLon].forEach(el => {
         el.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") { e.preventDefault(); sidebarJump(); }
+            if (e.key === "Enter") { e.preventDefault(); goToCoords($sidebarLat.value, $sidebarLon.value); }
         });
     });
-
 
     // ─── Distance measurement tool ─────────────────────────
     // Multi-point path flow:

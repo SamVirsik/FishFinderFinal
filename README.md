@@ -2,44 +2,36 @@
  
 ## Basemap providers
 
+FishFinder runs **fully keyless**: no API keys, no account-gated
+services, and no calls to Esri-hosted basemaps, MapTiler, or EOX. The
+ArcGIS JS API is still the map rendering engine (it's loaded as a library
+from `js.arcgis.com`), but every basemap is a public-domain tile service.
+
 The basemap registry lives in `src/basemap_sources.py` and is surfaced
-to the browser via `GET /basemaps`. Three categories of provider are
-supported: built-in Esri basemaps (default), arbitrary XYZ tile
-templates, and ArcGIS REST MapServer endpoints.
+to the browser via `GET /basemaps`. Two provider flavours are supported:
+`arcgis_rest` (an ArcGIS REST MapServer URL, loaded as a `TileLayer`) and
+`xyz` (an XYZ tile template, loaded as a `WebTileLayer`). Note that
+`arcgis_rest` is just a protocol — the registered services are USGS's
+own National Map endpoints, not Esri-hosted basemaps.
 
-### MapTiler Satellite
+### USGS National Map basemaps (all keyless, public domain)
 
-To enable the MapTiler Satellite basemap, set the `MAPTILER_API_KEY`
-environment variable before starting the server:
+Three entries, all served from `basemap.nationalmap.gov` with no key:
 
-```bash
-export MAPTILER_API_KEY=your_key_here   # macOS / Linux
-$env:MAPTILER_API_KEY = "your_key_here" # PowerShell
-python app.py
-```
+- **USGS Imagery** (`USGSImageryTopo`) — aerial imagery with topographic
+  labels. The default basemap. Reads shorelines, keys, and shallow reefs
+  well; open ocean shows dark, where the bathymetry overlay is the point.
+- **USGS Topo** (`USGSTopo`) — standard topographic map with place names.
+- **USGS Aerial** (`USGSImageryOnly`, NAIP) — pure high-res aerial.
+  **CONUS land-only** — open water renders as black/blank tiles. The
+  button carries a tooltip warning to this effect.
 
-If the variable is unset, the MapTiler button is omitted from the grid
-entirely — no broken button, no placeholder URL.
+Attribution shown on the map: **USGS, USDA** (basemaps) and **NOAA**
+(bathymetry overlay).
 
-**The key ships to the browser** with every tile request (this is
-unavoidable for client-direct tile fetches). Domain-restrict the key in
-the [MapTiler Cloud dashboard](https://cloud.maptiler.com/) so it can
-only be used from your deployment hostname(s).
+## Finding a location
 
-The MapTiler free tier is **100,000 tile requests + 5,000 map sessions
-per month**, whichever cap is hit first. MapTiler hard-pauses the key
-at the cap rather than auto-billing.
-
-### Sentinel-2 Cloudless 2024 (EOX)
-
-Free, no API key. **CC BY-NC-SA 4.0** — non-commercial use only.
-FishFinder is a non-commercial personal/fishing tool, so this is fine
-for the intended use case; if you fork it for commercial distribution
-you must remove this basemap entry or negotiate licensing separately
-with EOX.
-
-### USGS Aerial (NAIP)
-
-Free, no API key, public domain. **CONUS land-only** — open water
-renders as black/blank tiles. The button carries a tooltip warning to
-this effect.
+There is no place-name search (that required the Esri World Geocoder).
+Instead, enter decimal-degree coordinates in the topbar lat/long bar (or
+the **Jump to coordinates** box in the Tools sidebar) to recenter the
+map — handy for divers punching in known dive-site coordinates.

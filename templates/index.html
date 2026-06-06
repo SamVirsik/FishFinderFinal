@@ -16,14 +16,7 @@
             <span class="brand-mark"></span>
             <span class="brand-name">FishFinder</span>
         </a>
-        <div class="search-wrap">
-            <div class="search">
-                <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                <input type="text" id="search-input" placeholder="Search a place, reef, or city" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-suggestions">
-                <button type="button" id="search-clear" class="search-clear" hidden aria-label="Clear search">×</button>
-            </div>
-            <ul id="search-suggestions" class="search-suggestions" hidden role="listbox"></ul>
-        </div>
+        {% block topbar_tools %}{% endblock %}
     </header>
 
     <main class="app">

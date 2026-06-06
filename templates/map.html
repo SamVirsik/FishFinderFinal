@@ -2,6 +2,12 @@
 
 {% block title %}FishFinder{% endblock %}
 
+<!-- The topbar carries branding only. The lat/long jump-to control now
+     lives exclusively in the left "Tools" sidebar (see the "Navigate"
+     section in the main_content block) — it doesn't belong in the
+     header, and a single home keeps the two copies from drifting. -->
+{% block topbar_tools %}{% endblock %}
+
 {% block main_content %}
 
 <!-- Mark the document early (before paint) so the fixed topbar and map
@@ -12,7 +18,7 @@
 <!-- Permanent navigation-safety disclaimer. Pinned to the very top of the
      viewport, above the nav. No dismiss control — it is always present. -->
 <div class="nav-disclaimer" role="note">
-    <p><strong>FishFinder is for recreational use only.</strong> Chart data is not certified for navigation. Do not use to navigate vessels.</p>
+    <p><strong>Not for Navigation.</strong> Not a substitute for official nautical charts. For recreational use only — do not use to navigate vessels. <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a></p>
 </div>
 
 <!-- First-visit acceptance gate. The map renders (blurred) behind this
@@ -68,8 +74,12 @@
             <p class="field-hint">Underlying map shown beneath bathymetry.</p>
         </div>
 
+        <!-- Navigate: keyless jump-to-coordinates. This is the ONLY copy
+             of the control now — it used to be mirrored in the topbar, but
+             coordinate entry belongs with the other map tools, not in the
+             header. Recenters the map on decimal-degree input. -->
         <div class="panel-section">
-            <label class="field-label">Jump to coordinates</label>
+            <label class="field-label">Navigate</label>
             <div class="coord-inputs">
                 <label class="coord-field">
                     <span>Lat</span>
@@ -214,9 +224,9 @@
         <div class="panel-section">
             <div class="field-row">
                 <label class="field-label" for="opacity-{{layer['id']}}">Layer Opacity</label>
-                <span class="field-value" id="opacity-value-{{layer['id']}}">75%</span>
+                <span class="field-value" id="opacity-value-{{layer['id']}}">90%</span>
             </div>
-            <input type="range" id="opacity-{{layer['id']}}" min="0" max="100" value="75" class="slider">
+            <input type="range" id="opacity-{{layer['id']}}" min="0" max="100" value="90" class="slider">
         </div>
 
         <div class="panel-actions">
