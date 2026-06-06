@@ -4,7 +4,47 @@
 
 {% block main_content %}
 
-<div class="workspace">
+<!-- Mark the document early (before paint) so the fixed topbar and map
+     chrome get shifted down by the disclaimer banner's height. Scoped to
+     .ff-has-banner so the shared shell (e.g. /spotfinder) is unaffected. -->
+<script>document.documentElement.classList.add('ff-has-banner');</script>
+
+<!-- Permanent navigation-safety disclaimer. Pinned to the very top of the
+     viewport, above the nav. No dismiss control — it is always present. -->
+<div class="nav-disclaimer" role="note">
+    <p><strong>FishFinder is for recreational use only.</strong> Chart data is not certified for navigation. Do not use to navigate vessels.</p>
+</div>
+
+<!-- First-visit acceptance gate. The map renders (blurred) behind this
+     overlay; the only way past is the Accept button, which records
+     acceptance in localStorage under `ff_terms_accepted`. Returning
+     visitors skip it entirely — see the inline gate script at the bottom
+     of this block. The overlay backdrop intercepts all pointer events, so
+     the map and panels beneath cannot be interacted with until accepted. -->
+<div id="ff-gate" class="ff-gate" role="dialog" aria-modal="true"
+     aria-labelledby="ff-gate-title">
+    <div class="ff-gate-card">
+        <span class="ff-gate-brand">Fish<b>Finder</b></span>
+        <h2 id="ff-gate-title" class="ff-gate-title">Before you dive in.</h2>
+        <p class="ff-gate-body">FishFinder provides bathymetric data for recreational fishing and diving only. This tool is not intended for vessel navigation and does not replace certified nautical charts. By continuing, you agree to use this data responsibly.</p>
+        <label class="ff-gate-check">
+            <input type="checkbox" id="ff-gate-agree">
+            <span>I have read and agree to the
+                <a href="/terms">Terms of Service</a>
+                and
+                <a href="/privacy">Privacy Policy</a>.</span>
+        </label>
+        <button type="button" id="ff-gate-accept" class="ff-gate-launch" disabled>
+            Launch Map
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+        </button>
+    </div>
+</div>
+
+<!-- ff-map-hidden hides #map for the no-JS case (the gate can't be passed
+     without JS, so the map must not be reachable). The inline gate script
+     removes it for every JS-enabled visitor before map.js initialises. -->
+<div class="workspace ff-map-hidden">
     <div id="map"></div>
 
     <button id="left-panel-toggle" class="panel-toggle panel-toggle-left visible" aria-label="Show tools">
@@ -471,6 +511,84 @@
     </div>
 
 </div>
+
+<!-- Acceptance-gate controller. Runs during parse, before the ArcGIS /
+     map.js scripts below, so the blurred preview + overlay are in place
+     before the map initialises. Reveals #map for JS-enabled visitors and
+     shows the gate only on the first visit. -->
+<script>
+(function () {
+    var ACCEPT_KEY = 'ff_terms_accepted';
+    var TOKEN_KEY = 'ff_session_token';
+    var workspace = document.querySelector('.workspace');
+    var agree = document.getElementById('ff-gate-agree');
+    var accept = document.getElementById('ff-gate-accept');
+
+    // JS is available: let the map render (the no-JS CSS guard is lifted).
+    if (workspace) workspace.classList.remove('ff-map-hidden');
+
+    // Show the gate by default until the token check clears it. This keeps
+    // the map un-interactable during the (loopback-fast) check rather than
+    // briefly exposing it to a user who hasn't accepted under this session.
+    document.body.classList.add('ff-gate-active');
+
+    var liveToken = null;  // set once /api/session-token resolves
+
+    // The Accept button stays disabled until the box is checked (unchecked
+    // by default — legally stronger than a pre-checked box).
+    agree.addEventListener('change', function () {
+        accept.disabled = !agree.checked;
+    });
+
+    accept.addEventListener('click', function () {
+        if (!agree.checked) return;
+        try {
+            localStorage.setItem(ACCEPT_KEY, JSON.stringify({
+                accepted: true,
+                timestamp: new Date().toISOString()
+            }));
+            // Bind this acceptance to the current server session. A restart
+            // mints a new token, so the stored one stops matching and the
+            // gate re-shows.
+            if (liveToken) localStorage.setItem(TOKEN_KEY, liveToken);
+        } catch (e) { /* storage blocked: accept for this session only */ }
+        document.body.classList.remove('ff-gate-active');
+    });
+
+    // No backdrop-click, Escape, or other dismissal is wired: the only way
+    // past the gate is the Accept button.
+
+    function storedAccepted() {
+        try {
+            var raw = localStorage.getItem(ACCEPT_KEY);
+            if (!raw) return false;
+            var parsed = JSON.parse(raw);
+            return parsed === true || (parsed && parsed.accepted === true);
+        } catch (e) { return false; }
+    }
+
+    // Compare the stored token to the live one. Match + prior acceptance =>
+    // skip the gate. Otherwise clear acceptance and leave the gate showing.
+    fetch('/api/session-token', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            liveToken = data && data.token;
+            var storedToken = null;
+            try { storedToken = localStorage.getItem(TOKEN_KEY); } catch (e) {}
+
+            if (liveToken && storedToken === liveToken && storedAccepted()) {
+                document.body.classList.remove('ff-gate-active');  // skip gate
+            } else {
+                // Stale or absent session: drop the old acceptance so it
+                // can't be reused, and keep the gate up for re-acceptance.
+                try { localStorage.removeItem(ACCEPT_KEY); } catch (e) {}
+            }
+        })
+        .catch(function () {
+            // Token unreachable: fail safe by leaving the gate showing.
+        });
+})();
+</script>
 
 <!-- Three.js for the 3D inspector. Loaded BEFORE the ArcGIS API on
      purpose: ArcGIS bundles Dojo's AMD loader, and Three.js's UMD

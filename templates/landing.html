@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FishFinder — See the bottom before you drop in.</title>
+<meta name="description" content="FishFinder maps the ocean floor in high resolution so freedivers and spearfishermen can scout structure, ledges, and drops before they ever hit the water.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Barlow:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --bg:#0a0e14;
+  --bg-2:#0c121b;
+  --panel:#0e151f;
+  --line:rgba(30,127,168,.20);
+  --teal:#1e7fa8;
+  --teal-dim:#155f80;
+  --text:#e8eef2;
+  --muted:#8b9aa6;
+  --muted-2:#5c6b77;
+  --head:'Chakra Petch',sans-serif;
+  --body:'Barlow',sans-serif;
+  --maxw:1180px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--body);
+  font-size:17px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+/* ---- Background textures: depth contours + grain + scanlines ---- */
+.bg-fx{position:fixed;inset:0;z-index:0;pointer-events:none}
+.bg-fx .contours{
+  position:absolute;inset:0;opacity:.5;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='760' height='760' viewBox='0 0 760 760'><g fill='none' stroke='%231e7fa8' stroke-opacity='0.05' stroke-width='1.2'><path d='M-50 220 C 150 120, 320 300, 500 200 S 820 120, 900 260'/><path d='M-50 300 C 160 200, 330 380, 510 280 S 820 200, 900 340'/><path d='M-50 380 C 170 280, 340 460, 520 360 S 820 280, 900 420'/><path d='M-50 470 C 180 370, 350 540, 520 450 S 820 370, 900 510'/><path d='M-50 560 C 180 470, 360 620, 540 540 S 820 470, 900 600'/><path d='M-50 650 C 190 560, 360 700, 540 630 S 820 560, 900 690'/></g></svg>");
+  background-size:760px 760px;
+}
+.bg-fx .grain{
+  position:absolute;inset:0;opacity:.045;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.bg-fx .scan{
+  position:absolute;inset:0;opacity:.5;
+  background-image:repeating-linear-gradient(0deg,rgba(255,255,255,.02) 0px,rgba(255,255,255,.02) 1px,transparent 1px,transparent 3px);
+}
+.bg-fx .glow{
+  position:absolute;top:-20%;left:50%;transform:translateX(-50%);
+  width:1100px;height:700px;
+  background:radial-gradient(ellipse at center,rgba(30,127,168,.10),transparent 65%);
+  filter:blur(20px);
+}
+
+/* ---- Shell ---- */
+.wrap{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:0 28px}
+
+/* ---- Topbar ---- */
+.topbar{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(10px);
+  background:linear-gradient(180deg,rgba(10,14,20,.85),rgba(10,14,20,.55));
+  border-bottom:1px solid var(--line);
+}
+.topbar .inner{display:flex;align-items:center;justify-content:space-between;height:64px;max-width:var(--maxw);margin:0 auto;padding:0 28px}
+.brand{display:flex;align-items:center;gap:11px;text-decoration:none;color:var(--text)}
+.brand .logo{
+  height:36px;width:auto;display:block;object-fit:contain;
+}
+.brand .name{font-family:var(--head);font-weight:700;font-size:19px;letter-spacing:.04em}
+.brand .name b{color:var(--teal)}
+.topbar nav{display:flex;align-items:center;gap:28px}
+.topbar nav a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:500;letter-spacing:.03em;transition:color .2s}
+.topbar nav a:hover{color:var(--text)}
+.topbar .nav-cta{
+  font-family:var(--head);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--teal);border:1px solid var(--line);border-radius:6px;padding:8px 16px;
+  background:rgba(30,127,168,.06);transition:all .2s;
+}
+.topbar .nav-cta:hover{background:rgba(30,127,168,.14);border-color:var(--teal);color:var(--teal)}
+@media(max-width:720px){.topbar nav .nav-link{display:none}}
+
+/* ---- Section primitives ---- */
+section{position:relative;z-index:1}
+.eyebrow{
+  font-family:var(--head);font-size:12.5px;font-weight:600;letter-spacing:.28em;
+  text-transform:uppercase;color:var(--teal);margin-bottom:18px;
+  display:inline-flex;align-items:center;gap:10px;
+}
+.eyebrow::before{content:"";width:26px;height:1px;background:var(--teal);opacity:.7}
+.divider{height:1px;background:linear-gradient(90deg,transparent,var(--line) 20%,var(--line) 80%,transparent);margin:0 auto;max-width:var(--maxw)}
+
+/* ---- Hero ---- */
+.hero{padding:90px 0 70px;text-align:center}
+.hero h1{
+  font-family:var(--head);font-weight:700;
+  font-size:clamp(40px,6.4vw,76px);line-height:1.02;letter-spacing:-.01em;
+  margin:0 auto 22px;max-width:14ch;
+}
+.hero h1 .accent{color:var(--teal);text-shadow:0 0 32px rgba(30,127,168,.4)}
+.hero .sub{
+  font-size:clamp(17px,2vw,21px);color:var(--muted);max-width:60ch;margin:0 auto 38px;line-height:1.55;
+}
+.hero .cta-row{display:flex;gap:16px;justify-content:center;align-items:center;flex-wrap:wrap}
+
+/* ---- Launch button (most dominant element) ---- */
+.launch{
+  --pad-y:18px;--pad-x:42px;
+  position:relative;display:inline-flex;align-items:center;gap:12px;
+  font-family:var(--head);font-weight:700;font-size:18px;letter-spacing:.1em;text-transform:uppercase;
+  color:#021f2b;text-decoration:none;
+  padding:var(--pad-y) var(--pad-x);border-radius:10px;
+  background:linear-gradient(180deg,#2a9cc8,var(--teal));
+  box-shadow:0 0 0 1px rgba(30,127,168,.5),0 8px 30px rgba(30,127,168,.32);
+  animation:pulse 3s ease-in-out infinite;
+  transition:transform .18s ease, box-shadow .18s ease;
+  overflow:hidden;
+}
+.launch:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(30,127,168,.7),0 14px 44px rgba(30,127,168,.5)}
+.launch:active{transform:translateY(0)}
+.launch svg{transition:transform .2s}
+.launch:hover svg{transform:translateX(4px)}
+.launch::after{
+  content:"";position:absolute;top:0;left:-60%;width:40%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);
+  transform:skewX(-20deg);animation:sheen 4.5s ease-in-out infinite;
+}
+@keyframes pulse{
+  0%,100%{box-shadow:0 0 0 1px rgba(30,127,168,.5),0 8px 30px rgba(30,127,168,.30)}
+  50%{box-shadow:0 0 0 1px rgba(30,127,168,.7),0 8px 44px rgba(30,127,168,.55)}
+}
+@keyframes sheen{0%,55%{left:-60%}80%,100%{left:140%}}
+
+.ghost-link{
+  font-family:var(--head);font-weight:500;font-size:14px;letter-spacing:.06em;
+  color:var(--muted);text-decoration:none;display:inline-flex;align-items:center;gap:8px;
+  padding:14px 8px;transition:color .2s;
+}
+.ghost-link:hover{color:var(--text)}
+
+/* ---- Hero screenshot mockup ---- */
+.hero-shot{margin-top:64px;perspective:1600px}
+.browser{
+  max-width:1080px;margin:0 auto;border-radius:12px;overflow:hidden;
+  border:1px solid rgba(30,127,168,.22);
+  background:#0b1019;
+  box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.02),0 0 60px rgba(30,127,168,.12);
+}
+.browser .chrome{
+  display:flex;align-items:center;gap:8px;padding:11px 16px;
+  background:linear-gradient(180deg,#10171f,#0c1119);border-bottom:1px solid rgba(255,255,255,.05);
+}
+.browser .dot{width:11px;height:11px;border-radius:50%;background:#283541}
+.browser .dot:nth-child(1){background:#ff5f56}
+.browser .dot:nth-child(2){background:#ffbd2e}
+.browser .dot:nth-child(3){background:#27c93f}
+.browser .addr{
+  margin-left:14px;flex:1;max-width:340px;font-family:var(--head);font-size:12px;
+  color:var(--muted-2);background:#0a0f16;border:1px solid rgba(255,255,255,.05);
+  border-radius:6px;padding:5px 12px;letter-spacing:.04em;
+}
+.browser img{display:block;width:100%;height:auto}
+.browser .shade{position:relative}
+.browser .shade::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 70%,rgba(10,14,20,.35))}
+
+/* ---- Stat strip ---- */
+.stats{display:flex;justify-content:center;gap:56px;flex-wrap:wrap;padding:54px 0 64px;text-align:center}
+.stat .num{font-family:var(--head);font-weight:700;font-size:34px;color:var(--teal);line-height:1}
+.stat .lbl{font-size:13px;color:var(--muted-2);letter-spacing:.1em;text-transform:uppercase;margin-top:8px}
+
+/* ---- Features ---- */
+.features{padding:30px 0 20px}
+.feature{
+  display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center;
+  padding:70px 0;
+}
+.feature.flip .f-media{order:2}
+.feature.flip .f-copy{order:1}
+.feature .f-copy .num-tag{
+  font-family:var(--head);font-weight:600;font-size:13px;letter-spacing:.2em;color:var(--teal-dim);
+}
+.feature .f-copy h2{
+  font-family:var(--head);font-weight:700;font-size:clamp(28px,3.6vw,42px);line-height:1.08;
+  margin:14px 0 18px;letter-spacing:-.01em;
+}
+.feature .f-copy p{color:var(--muted);font-size:18px;max-width:46ch}
+.feature .f-copy .tags{display:flex;gap:10px;flex-wrap:wrap;margin-top:24px}
+.feature .f-copy .tags span{
+  font-family:var(--head);font-size:12px;letter-spacing:.06em;color:var(--muted);
+  border:1px solid var(--line);border-radius:999px;padding:6px 14px;background:rgba(30,127,168,.04);
+}
+.f-media{position:relative}
+.f-media .frame{
+  border-radius:12px;overflow:hidden;border:1px solid rgba(30,127,168,.2);
+  box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 40px rgba(30,127,168,.08);
+  background:#0b1019;
+}
+.f-media .frame img{display:block;width:100%;height:auto}
+.f-media .badge{
+  position:absolute;top:-14px;left:-14px;
+  font-family:var(--head);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--teal);background:#0a0e14;border:1px solid var(--teal);border-radius:6px;padding:7px 12px;
+  box-shadow:0 0 24px rgba(30,127,168,.3);
+}
+.feature.feat-3d .f-media .frame{box-shadow:0 40px 110px rgba(0,0,0,.7),0 0 70px rgba(30,127,168,.18)}
+
+/* ---- Final CTA ---- */
+.final{padding:110px 0 130px;text-align:center}
+.final h2{
+  font-family:var(--head);font-weight:700;font-size:clamp(32px,5vw,58px);line-height:1.05;
+  letter-spacing:-.01em;max-width:18ch;margin:0 auto 20px;
+}
+.final h2 .accent{color:var(--teal)}
+.final p{color:var(--muted);font-size:19px;margin-bottom:40px}
+
+/* ---- Footer ---- */
+footer{border-top:1px solid var(--line);padding:34px 0;position:relative;z-index:1}
+footer .inner{max-width:var(--maxw);margin:0 auto;padding:0 28px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px}
+footer .legal{color:var(--muted-2);font-size:13px;letter-spacing:.03em}
+footer .src{color:var(--muted-2);font-size:13px;font-family:var(--head);letter-spacing:.06em}
+footer .src b{color:var(--muted)}
+
+/* ---- Minimal legal bar (very bottom) ---- */
+.legal-bar{border-top:1px solid var(--line);padding:22px 0;position:relative;z-index:1;text-align:center}
+.legal-bar .inner{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+.legal-bar span{color:var(--muted-2);font-size:13px;letter-spacing:.03em}
+.legal-bar a{color:var(--muted);text-decoration:none;transition:color .2s}
+.legal-bar a:hover{color:var(--teal)}
+
+/* ---- Reveal animations ---- */
+.reveal{opacity:0;transform:translateY(34px);transition:opacity .8s cubic-bezier(.2,.7,.2,1),transform .8s cubic-bezier(.2,.7,.2,1)}
+.reveal.in{opacity:1;transform:none}
+[data-fade]{opacity:0;transform:translateY(26px);animation:none}
+.loaded [data-fade]{animation:rise .9s cubic-bezier(.2,.7,.2,1) forwards}
+.loaded [data-fade="1"]{animation-delay:.05s}
+.loaded [data-fade="2"]{animation-delay:.18s}
+.loaded [data-fade="3"]{animation-delay:.32s}
+.loaded [data-fade="4"]{animation-delay:.46s}
+.loaded .hero-shot{opacity:0;animation:driftUp 1.1s cubic-bezier(.2,.7,.2,1) .55s forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+@keyframes driftUp{from{opacity:0;transform:translateY(70px) scale(.98)}to{opacity:1;transform:none}}
+
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important}
+  .reveal{opacity:1;transform:none;transition:none}
+  [data-fade],.hero-shot{opacity:1!important}
+}
+
+/* ---- Responsive ---- */
+@media(max-width:860px){
+  .feature{grid-template-columns:1fr;gap:34px;padding:54px 0}
+  .feature.flip .f-media{order:0}
+  .feature.flip .f-copy{order:0}
+  .stats{gap:36px}
+}
+@media(max-width:520px){
+  body{font-size:16px}
+  .hero{padding:56px 0 40px}
+  .launch{font-size:16px;--pad-x:30px}
+  .browser .addr{display:none}
+}
+</style>
+</head>
+<body>
+
+<div class="bg-fx" aria-hidden="true">
+  <div class="glow"></div>
+  <div class="contours"></div>
+  <div class="grain"></div>
+  <div class="scan"></div>
+</div>
+
+<header class="topbar">
+  <div class="inner">
+    <a class="brand" href="/">
+      <img class="logo" src="/static/img/logo.png" alt="FishFinder logo">
+      <span class="name">Fish<b>Finder</b></span>
+    </a>
+    <nav>
+      <a class="nav-link" href="#features">Features</a>
+      <a class="nav-cta" href="/map">Launch Map</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ===== HERO ===== -->
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow" data-fade="1">Bathymetric intel for divers &amp; fishermen</div>
+    <h1 data-fade="2">See the bottom <span class="accent">before you drop in.</span></h1>
+    <p class="sub" data-fade="3">FishFinder maps the ocean floor in high resolution — so you can find structure, ledges, and drops before you wet a line or hit the water.</p>
+    <div class="cta-row" data-fade="4">
+      <a class="launch" href="/map">
+        Launch Map
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+      </a>
+      <a class="ghost-link" href="#features">
+        Explore the toolset
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </a>
+    </div>
+
+    <div class="hero-shot">
+      <div class="browser">
+        <div class="chrome">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="addr">fishfinder.app/map</span>
+        </div>
+        <div class="shade">
+          <img src="/static/img/hero.png" alt="FishFinder bathymetric map viewer showing high-resolution ocean floor terrain">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="stats">
+  <div class="stat reveal"><div class="num">NOAA · USGS</div><div class="lbl">Survey-grade source data</div></div>
+  <div class="stat reveal"><div class="num">3D</div><div class="lbl">Terrain inspection</div></div>
+  <div class="stat reveal"><div class="num">BPI · TRI</div><div class="lbl">Structure scoring</div></div>
+</div></div>
+
+<div class="divider"></div>
+
+<!-- ===== FEATURES ===== -->
+<section class="features" id="features">
+  <div class="wrap">
+
+    <!-- Feature 1: Bathymetric Terrain -->
+    <article class="feature reveal">
+      <div class="f-copy">
+        <div class="num-tag">01 — TERRAIN</div>
+        <h2>Bathymetric Terrain</h2>
+        <p>Full-coverage coastal depth maps rendered from NOAA and USGS survey data. Color relief and hillshade let you read the bottom the way a topographic map reads the land.</p>
+        <div class="tags"><span>Color relief</span><span>Hillshade</span><span>Satellite basemap</span></div>
+      </div>
+      <div class="f-media">
+        <span class="badge">Satellite mode</span>
+        <div class="frame"><img src="/static/img/satellite.png" alt="Satellite basemap mode over coastal water"></div>
+      </div>
+    </article>
+
+    <!-- Feature 2: Spotfinder -->
+    <article class="feature flip reveal" id="spotfinder">
+      <div class="f-media">
+        <span class="badge">Auto-detected</span>
+        <div class="frame"><img src="/static/img/spotfinder.png" alt="Spotfinder output highlighting high-probability fishing structure"></div>
+      </div>
+      <div class="f-copy">
+        <div class="num-tag">02 — SPOTFINDER</div>
+        <h2>Find the structure, automatically.</h2>
+        <p>Our terrain analysis engine scores the seafloor by slope, rugosity, and bathymetric position index — surfacing the drops, ledges, and hard bottom worth fishing or diving, automatically.</p>
+        <div class="tags"><span>Slope</span><span>Rugosity</span><span>BPI / TRI</span></div>
+      </div>
+    </article>
+
+    <!-- Feature 3: 3D View -->
+    <article class="feature feat-3d reveal">
+      <div class="f-copy">
+        <div class="num-tag">03 — 3D VIEW</div>
+        <h2>Inspect every drop-off in 3D.</h2>
+        <p>Tilt the map into three dimensions. Inspect drop-offs, walls, and transition zones from any angle — whether you're planning a drift or a dive entry.</p>
+        <div class="tags"><span>Tilt &amp; orbit</span><span>Walls &amp; ledges</span><span>Entry planning</span></div>
+      </div>
+      <div class="f-media">
+        <span class="badge">3D terrain</span>
+        <div class="frame"><img src="/static/img/terrain3d.png" alt="3D terrain view of the ocean floor showing drop-offs and ledges"></div>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ===== FINAL CTA ===== -->
+<section class="final">
+  <div class="wrap reveal">
+    <div class="eyebrow" style="justify-content:center">Ready when you are</div>
+    <h2>Scout the bottom. <span class="accent">Then go get it.</span></h2>
+    <p>Built for anglers and divers who do their homework.</p>
+    <a class="launch" href="/map">
+      Launch Map
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+    </a>
+  </div>
+</section>
+
+<footer>
+  <div class="inner">
+    <a class="brand" href="/">
+      <img class="logo" src="/static/img/logo.png" alt="FishFinder logo">
+      <span class="name">Fish<b>Finder</b></span>
+    </a>
+    <div class="src">Depth data: <b>NOAA</b> · <b>USGS</b> coastal DEM</div>
+    <div class="legal">© 2026 FishFinder · Dive within your limits.</div>
+  </div>
+</footer>
+
+<div class="legal-bar">
+  <div class="inner">
+    <span>© 2025 FishFinder &nbsp;·&nbsp; <a href="/terms">Terms of Service</a> &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a></span>
+  </div>
+</div>
+
+<script>
+// Entrance animations: flag <body> once loaded so hero fade/drift fire.
+window.addEventListener('load', () => document.body.classList.add('loaded'));
+// Failsafe if 'load' is slow (large hero image): trigger shortly after DOM ready.
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => document.body.classList.add('loaded'), 400);
+});
+
+// Scroll reveals.
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+  }
+}, { threshold: 0.16, rootMargin: '0px 0px -8% 0px' });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>

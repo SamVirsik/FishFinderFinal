@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }} — FishFinder</title>
+<meta name="description" content="{{ title }} for FishFinder, the bathymetric mapping tool for divers and fishermen.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Barlow:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --bg:#0a0e14;
+  --panel:#0e151f;
+  --line:rgba(30,127,168,.20);
+  --teal:#1e7fa8;
+  --text:#e8eef2;
+  --muted:#8b9aa6;
+  --muted-2:#5c6b77;
+  --head:'Chakra Petch',sans-serif;
+  --body:'Barlow',sans-serif;
+  --maxw:1180px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--body);
+  font-size:17px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+}
+
+/* ---- Background textures (subset of landing) ---- */
+.bg-fx{position:fixed;inset:0;z-index:0;pointer-events:none}
+.bg-fx .contours{
+  position:absolute;inset:0;opacity:.4;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='760' height='760' viewBox='0 0 760 760'><g fill='none' stroke='%231e7fa8' stroke-opacity='0.05' stroke-width='1.2'><path d='M-50 220 C 150 120, 320 300, 500 200 S 820 120, 900 260'/><path d='M-50 300 C 160 200, 330 380, 510 280 S 820 200, 900 340'/><path d='M-50 380 C 170 280, 340 460, 520 360 S 820 280, 900 420'/><path d='M-50 470 C 180 370, 350 540, 520 450 S 820 370, 900 510'/><path d='M-50 560 C 180 470, 360 620, 540 540 S 820 470, 900 600'/><path d='M-50 650 C 190 560, 360 700, 540 630 S 820 560, 900 690'/></g></svg>");
+  background-size:760px 760px;
+}
+.bg-fx .glow{
+  position:absolute;top:-20%;left:50%;transform:translateX(-50%);
+  width:1100px;height:700px;
+  background:radial-gradient(ellipse at center,rgba(30,127,168,.10),transparent 65%);
+  filter:blur(20px);
+}
+
+/* ---- Topbar (matches landing) ---- */
+.topbar{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(10px);
+  background:linear-gradient(180deg,rgba(10,14,20,.85),rgba(10,14,20,.55));
+  border-bottom:1px solid var(--line);
+}
+.topbar .inner{display:flex;align-items:center;justify-content:space-between;height:64px;max-width:var(--maxw);margin:0 auto;padding:0 28px}
+.brand{display:flex;align-items:center;gap:11px;text-decoration:none;color:var(--text)}
+.brand .logo{height:36px;width:auto;display:block;object-fit:contain}
+.brand .name{font-family:var(--head);font-weight:700;font-size:19px;letter-spacing:.04em}
+.brand .name b{color:var(--teal)}
+.topbar nav{display:flex;align-items:center;gap:28px}
+.topbar nav a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:500;letter-spacing:.03em;transition:color .2s}
+.topbar nav a:hover{color:var(--text)}
+.topbar .nav-cta{
+  font-family:var(--head);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--teal);border:1px solid var(--line);border-radius:6px;padding:8px 16px;
+  background:rgba(30,127,168,.06);transition:all .2s;
+}
+.topbar .nav-cta:hover{background:rgba(30,127,168,.14);border-color:var(--teal);color:var(--teal)}
+@media(max-width:720px){.topbar nav .nav-link{display:none}}
+
+/* ---- Legal document body ---- */
+.doc{position:relative;z-index:1;flex:1;width:100%;max-width:680px;margin:0 auto;padding:72px 28px 96px}
+.doc .eyebrow{
+  font-family:var(--head);font-size:12.5px;font-weight:600;letter-spacing:.28em;
+  text-transform:uppercase;color:var(--teal);margin-bottom:16px;
+  display:inline-flex;align-items:center;gap:10px;
+}
+.doc .eyebrow::before{content:"";width:26px;height:1px;background:var(--teal);opacity:.7}
+.doc h1{
+  font-family:var(--head);font-weight:700;font-size:clamp(32px,5vw,46px);
+  line-height:1.08;letter-spacing:-.01em;margin-bottom:10px;
+}
+.doc .meta{color:var(--muted-2);font-size:14px;letter-spacing:.02em;margin-bottom:40px}
+.doc h2{
+  font-family:var(--head);font-weight:600;font-size:19px;letter-spacing:.02em;
+  color:var(--text);margin:42px 0 16px;padding-top:6px;
+}
+.doc h2 .sec-num{color:var(--teal);margin-right:8px}
+.doc p{color:var(--muted);font-size:16px;line-height:1.8;margin-bottom:20px}
+.doc ul{list-style:none;margin:0 0 22px;padding:0}
+.doc ul li{
+  position:relative;color:var(--muted);font-size:16px;line-height:1.7;
+  padding-left:22px;margin-bottom:12px;
+}
+.doc ul li::before{content:"";position:absolute;left:4px;top:11px;width:6px;height:1px;background:var(--teal);opacity:.8}
+
+/* ---- Footer (matches landing) ---- */
+footer{border-top:1px solid var(--line);padding:28px 0;position:relative;z-index:1;text-align:center}
+footer .legal{color:var(--muted-2);font-size:13px;letter-spacing:.03em}
+footer .legal a{color:var(--muted);text-decoration:none;transition:color .2s}
+footer .legal a:hover{color:var(--teal)}
+
+@media(max-width:520px){
+  body{font-size:16px}
+  .doc{padding:48px 22px 72px}
+}
+</style>
+</head>
+<body>
+
+<div class="bg-fx" aria-hidden="true">
+  <div class="glow"></div>
+  <div class="contours"></div>
+</div>
+
+<header class="topbar">
+  <div class="inner">
+    <a class="brand" href="/">
+      <img class="logo" src="/static/img/logo.png" alt="FishFinder logo">
+      <span class="name">Fish<b>Finder</b></span>
+    </a>
+    <nav>
+      <a class="nav-link" href="/#features">Features</a>
+      <a class="nav-cta" href="/map">Launch Map</a>
+    </nav>
+  </div>
+</header>
+
+<main class="doc">
+  <div class="eyebrow">Legal</div>
+  <h1>{{ title }}</h1>
+  {% for b in blocks %}
+    {% if b.type == 'meta' %}
+      <div class="meta">{{ b.text }}</div>
+    {% elif b.type == 'heading' %}
+      {% set num, rest = b.text.split('.', 1) %}
+      <h2><span class="sec-num">{{ num }}.</span>{{ rest.strip() }}</h2>
+    {% elif b.type == 'list' %}
+      <ul>{% for item in b['items'] %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% else %}
+      <p>{{ b.text }}</p>
+    {% endif %}
+  {% endfor %}
+</main>
+
+<footer>
+  <div class="legal">
+    © 2025 FishFinder &nbsp;·&nbsp;
+    <a href="/terms">Terms of Service</a> &nbsp;·&nbsp;
+    <a href="/privacy">Privacy Policy</a>
+  </div>
+</footer>
+
+</body>
+</html>

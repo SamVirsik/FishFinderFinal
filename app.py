@@ -24,9 +24,11 @@ img/raster/. See `static/map.js` and `static/analyses-worker.js`.
 import json
 import logging
 import os
+import re
 import struct
 import threading
 import time
+import uuid
 
 import flask.cli
 import numpy as np
@@ -73,6 +75,13 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 flask.cli.show_server_banner = lambda *args, **kwargs: None
 
 app = Flask(__name__)
+
+# Unique per-process token, regenerated every time the server boots. The
+# map's terms gate stores the token it accepted under alongside acceptance;
+# on each page load the client compares its stored token to this live one
+# (via GET /api/session-token). A mismatch — which always happens after a
+# restart — invalidates the stored acceptance and re-shows the gate.
+_SESSION_TOKEN = uuid.uuid4().hex
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +188,85 @@ def map_page():
 
 @app.route('/')
 def index():
-    return map_page()
+    return render_template('landing.html')
+
+
+def _parse_legal(text):
+    """Turn a plain-text legal document into a list of typed blocks for
+    the template to render.
+
+    The source .txt files are hard-wrapped prose with blank-line
+    separators between blocks — but a "blank" line may contain stray
+    whitespace, so we can't just split on '\\n\\n'. We group runs of
+    non-blank lines into blocks, then classify each:
+
+      - heading : a lone numbered section line, e.g. "8. ACCEPTABLE USE"
+      - meta    : the "Last updated: …" line
+      - list    : a block whose lines are "- " bullets (wrapped
+                  continuation lines fold into the current item)
+      - para    : everything else; wrapped lines join with spaces
+
+    The document's own leading title line (FISHFINDER — …) is dropped:
+    the template renders the page title itself, so keeping it would
+    duplicate the heading.
+    """
+    lines = text.replace('\r\n', '\n').split('\n')
+    raw_blocks, cur = [], []
+    for ln in lines:
+        if ln.strip() == '':
+            if cur:
+                raw_blocks.append(cur)
+                cur = []
+        else:
+            cur.append(ln)
+    if cur:
+        raw_blocks.append(cur)
+
+    blocks = []
+    for i, blk in enumerate(raw_blocks):
+        if any(l.lstrip().startswith('- ') for l in blk):
+            items = []
+            for l in blk:
+                s = l.strip()
+                if s.startswith('- '):
+                    items.append(s[2:].strip())
+                elif items:            # wrapped continuation of prior bullet
+                    items[-1] += ' ' + s
+                else:
+                    items.append(s)
+            blocks.append({'type': 'list', 'items': items})
+            continue
+
+        joined = ' '.join(l.strip() for l in blk)
+        if i == 0 and re.match(r'^FISHFINDER\b', joined, re.I):
+            continue                   # drop the doc's own title line
+        if len(blk) == 1 and re.match(r'^\d+\.\s+\S', joined):
+            blocks.append({'type': 'heading', 'text': joined})
+        elif joined.lower().startswith('last updated'):
+            blocks.append({'type': 'meta', 'text': joined})
+        else:
+            blocks.append({'type': 'para', 'text': joined})
+    return blocks
+
+
+def _render_legal(filename, title):
+    """Read a plain-text legal document, parse it into blocks, and render
+    it in the shared legal template."""
+    path = os.path.join(os.path.dirname(__file__), 'legal', filename)
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
+    return render_template('legal.html', title=title,
+                           blocks=_parse_legal(text))
+
+
+@app.route('/terms')
+def terms_page():
+    return _render_legal('terms.txt', 'Terms of Service')
+
+
+@app.route('/privacy')
+def privacy_page():
+    return _render_legal('privacy.txt', 'Privacy Policy')
 
 
 @app.route('/spotfinder')
@@ -188,6 +275,15 @@ def spotfinder_page():
     # page bookmarkable and surviveable across reloads. The template
     # parses + validates client-side; the server just renders the shell.
     return render_template('spotfinder.html')
+
+
+@app.route('/api/session-token')
+def session_token():
+    # The map's terms gate ties acceptance to this token (see _SESSION_TOKEN
+    # near the top of this file). The browser stores the token it accepted
+    # under; when it no longer matches the live one — i.e. the server has
+    # restarted — the gate re-shows and forces re-acceptance.
+    return jsonify({'token': _SESSION_TOKEN})
 
 
 @app.route('/spotfinder/run', methods=['POST'])
