@@ -421,3 +421,27 @@ touching Flask — useful for previewing an area or trying a single algorithm.
 - **Resolution slider applies on release** (`change`), not during drag —
   every intermediate value would otherwise force a fresh raster fetch
   series. The label still updates live.
+- **Per-source LOD cap on switch** (resolved): `buildLayer` caps the tile
+  layer's `numLODs` at `min(BATHY_MAX_ZOOM, source.max_zoom)` (read from
+  `/sources` via `sourcesById`), NOT a flat `BATHY_MAX_ZOOM`. Coarse sources
+  stop short of z20 (`crm` z15, `multibeam` z14, `dem-global` z11); if the
+  layer advertised LODs past a source's `max_zoom`, ArcGIS would call
+  `fetchTile` for levels the server `503`s (`z > source.max_zoom` in
+  `fetch_tile_raster`, covered by
+  `raster_pipeline_test.py::test_zoom_out_of_source_range_returns_none`), the
+  worker reports `error`, and the slot stays blank — the "switch source →
+  blank until you zoom out below its ceiling" bug. Capping the LODs makes
+  ArcGIS over-zoom the source's deepest real tile instead. `depthSampleParams`
+  clamps the sampled `z` to the same ceiling so the depth readout doesn't
+  `503` into a spurious "No data" on an over-zoomed coarse source.
+- **Stationary tile-abort completes instead of rejecting** (resolved):
+  `getRenderedCanvas`'s abort handler only rejects same-level aborts while the
+  view is *moving* (`viewIsStationary` false → a pan; reject fast to keep
+  ArcGIS's pending queue short). A same-level abort while the view is *at rest*
+  is a layer-swap re-evaluation (a source/analysis/resolution cutover), not a
+  pan: ArcGIS will not re-issue `fetchTile` on its own because the needed-tile
+  set never changed, so rejecting left a freshly switched source blank until a
+  manual pan/zoom. The handler now lets the in-flight render resolve the tile
+  in place. (A same-source Reload dodged this because its visible tiles are
+  canvas-LRU hits — no render, no abort window; only a *fresh* source exposes
+  it.) Stale-ZOOM aborts (different level) still cancel + evict as before.

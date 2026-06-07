@@ -496,6 +496,22 @@ function cancelInflightRenders() {
 // re-request had nothing cached and resolved to the blank tile.
 let currentBathyLevel = null;
 
+// Whether the MapView is currently at rest. Driven by the `stationary`
+// watcher inside the require() callback (the only place `view` is in
+// scope). getRenderedCanvas uses it to tell a PAN abort apart from a
+// LAYER-SWAP re-evaluation abort:
+//   • Panning (not stationary): an aborted tile is scrolling off-screen
+//     and ArcGIS will re-request whatever scrolls in, so rejecting fast
+//     keeps the pending queue short — unchanged 60 fps pan behavior.
+//   • Stationary: an abort at the current viewport comes from a layer
+//     add/remove (a source/analysis/resolution cutover), NOT a pan. The
+//     tile is still wanted, but ArcGIS will NOT re-request it on its own
+//     because the needed-tile set never changed — so rejecting leaves the
+//     new source's tiles permanently blank until the user pans or zooms.
+//     We instead let the in-flight render finish and resolve fetchTile
+//     with it, so a source switch paints the new viewport immediately.
+let viewIsStationary = true;
+
 // Safety timeout. A wedged render (worker stuck, fetch hanging) used
 // to leave the fetchTile promise dangling forever, which ArcGIS reads
 // as "still loading, keep the slot empty" — a permanent basemap hole.
@@ -617,11 +633,7 @@ async function getRenderedCanvas(url, analysisKey, param, paramExtra, signal, le
             cleanup();
             // Stale-ZOOM abort (this tile's level is no longer where the
             // user is): drop the render from the worker queue and evict its
-            // inflight entry so a later revisit re-renders. A SAME-level
-            // abort is a pan — fall through and let the render finish so it
-            // warms the LRU. (Cutover flushing is handled separately by
-            // cancelInflightRenders; this path never touches a pan or a
-            // current-level tile.)
+            // inflight entry so a later revisit re-renders.
             if (level != null && currentBathyLevel != null
                 && level !== currentBathyLevel
                 && inflightCanvas.get(key)?.work === work
@@ -630,8 +642,28 @@ async function getRenderedCanvas(url, analysisKey, param, paramExtra, signal, le
                 try { renderWorker.postMessage({ type: 'cancel', id: entry.renderId }); dbgSent('cancel'); }
                 catch { /* worker mid-reset; its pending was already drained */ }
                 inflightCanvas.delete(key);
+                reject(abortError());
+                return;
             }
-            reject(abortError());
+            // Same-level abort. Two cases, told apart by view motion:
+            //   • Panning: the tile is scrolling off-screen and ArcGIS will
+            //     re-request what scrolls in — reject fast so the pending
+            //     queue stays short (unchanged 60 fps pan behavior). The
+            //     render keeps running and warms the LRU for the next visit.
+            //   • Stationary: the abort is a layer-swap re-evaluation (a
+            //     source/analysis/resolution cutover), not a pan. The tile
+            //     is still wanted at this exact viewport, but ArcGIS will not
+            //     re-issue fetchTile on its own because the needed-tile set
+            //     never changed. Rejecting here is what left a freshly
+            //     switched source blank until the user manually panned or
+            //     zoomed. Instead, fall through and let `work` resolve the
+            //     promise when the render lands, so the new source paints in
+            //     place. (`work` always settles — render, empty, or the 20s
+            //     timeout — so the slot can never hang.)
+            if (!viewIsStationary) {
+                reject(abortError());
+            }
+            // else: do nothing — the work.then() handler below resolves.
         };
         const cleanup = () => signal.removeEventListener('abort', onAbort);
         signal.addEventListener('abort', onAbort);
@@ -1101,14 +1133,29 @@ require([
     }
 
     function buildLayer(cfg) {
+        // Cap the layer's LODs at the SHALLOWER of BATHY_MAX_ZOOM and the
+        // source's own data ceiling. This is the load-bearing line for
+        // source switching: coarse sources stop well short of z20 (crm z15,
+        // multibeam z14, dem-global z11). If the layer advertised LODs past
+        // a source's max_zoom, ArcGIS would call fetchTile for levels the
+        // server answers with 503 (z > source.max_zoom in fetch_tile_raster)
+        // — the worker reports `error`, the slot stays blank, and the only
+        // way to get data was to zoom OUT below the source's ceiling. That
+        // was the "switch to another source → blank until you zoom out"
+        // bug. Capping the LODs makes ArcGIS over-zoom (resample) the
+        // source's deepest real tile instead, so a switch paints in place
+        // at any view zoom. Falls back to BATHY_MAX_ZOOM until /sources
+        // lands (sourcesById is empty during the cold-load window; the
+        // default dem-all caps at BATHY_MAX_ZOOM anyway).
+        const srcMeta = sourcesById[cfg.source];
+        const lodCap = Math.min(
+            BATHY_MAX_ZOOM,
+            srcMeta && Number.isFinite(srcMeta.max_zoom)
+                ? srcMeta.max_zoom : BATHY_MAX_ZOOM);
         return new RasterAnalysisLayer({
-            // Cap the layer's LODs at BATHY_MAX_ZOOM. When the view zooms
-            // past this (up to VIEW_MAX_ZOOM) ArcGIS resamples the deepest
-            // fetched tile rather than calling fetchTile for a level the
-            // server would answer with no-coverage — that's the over-zoom.
             tileInfo: TileInfo.create({
                 spatialReference: SpatialReference.WebMercator,
-                numLODs: BATHY_MAX_ZOOM + 1,
+                numLODs: lodCap + 1,
             }),
             spatialReference: SpatialReference.WebMercator,
             // Bathymetry data is NOAA's — surface it in the attribution
@@ -1470,6 +1517,9 @@ require([
     }
 
     view.watch("stationary", (val) => {
+        // Mirror into the module-scope flag getRenderedCanvas reads to
+        // classify tile aborts (layer-swap re-eval vs. pan).
+        viewIsStationary = val;
         if (val) schedulePrefetch();
         else     cancelPrefetch();
     });
@@ -1766,11 +1816,19 @@ require([
     // mosaic-rule ambiguity entirely.
     function depthSampleParams(lat, lon, source, resolution) {
         const ORIGIN = WEB_MERCATOR_HALF;
-        // Clamp to BATHY_MAX_ZOOM, not the raw view zoom: past that the map
-        // is over-zooming the deepest fetched tile, so that is the grid the
-        // on-screen pixel came from. Sampling a finer z than is rendered
-        // would reintroduce the depth-mismatch this approach exists to kill.
-        const z = Math.max(0, Math.min(BATHY_MAX_ZOOM,
+        // Clamp to the SAME ceiling the rendered layer uses (min of
+        // BATHY_MAX_ZOOM and this source's max_zoom), not the raw view zoom.
+        // Past that ceiling the map is over-zooming the deepest fetched
+        // tile, so that is the grid the on-screen pixel came from; sampling
+        // a finer z than is rendered would (a) reintroduce the depth-mismatch
+        // this approach exists to kill and (b) request a z the server 503s
+        // for a coarse source, reading back as a spurious "No data".
+        const srcMeta = sourcesById[source];
+        const zCap = Math.min(
+            BATHY_MAX_ZOOM,
+            srcMeta && Number.isFinite(srcMeta.max_zoom)
+                ? srcMeta.max_zoom : BATHY_MAX_ZOOM);
+        const z = Math.max(0, Math.min(zCap,
             Number.isFinite(view.zoom) ? Math.round(view.zoom) : 10));
         const mx = lon * ORIGIN / 180;
         const myDeg = Math.log(Math.tan((90 + lat) * Math.PI / 360))
