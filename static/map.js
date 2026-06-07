@@ -76,6 +76,42 @@
 const baseurl = window.location.origin;
 
 
+// ─── Debug instrumentation + overlay (?debug=1) ─────────────────
+// Live counters for the "uncached tiles paint grey" investigation. Off
+// unless the URL carries ?debug=1, so production pays nothing. Surfaces:
+//   • in-flight render count (renders posted to the worker, unresolved)
+//   • worker messages SENT vs RECEIVED, broken out by type
+//   • the last N tile outcomes (cached / success / empty / error / timeout)
+//   • the worker's cancelledIds set size (polled via 'debug-stat')
+//   • the last N stale-zoom cancels with their (level vs currentBathyLevel)
+// Hook points are tagged `// [dbg]` at: requestRender, requestSample, the
+// two cancel postMessage sites, onWorkerMessage, getRenderedCanvas (cache
+// hit), and renderToCanvas (outcomes).
+const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+const DBG_RING = 16;
+const dbg = {
+    inflightRenders: 0,
+    sent: { render: 0, sample: 0, cancel: 0 },
+    recv: { rendered: 0, empty: 0, error: 0, sampled: 0 },
+    outcomes: [],                 // ring: { t, kind, detail }
+    cancels:  [],                 // ring: { t, level, current }
+    workerCancelledSize: 0,
+    workerRasterCache:   0,
+    workerInflight:      0,
+};
+function _dbgPush(arr, item) { arr.push(item); if (arr.length > DBG_RING) arr.shift(); }
+function dbgSent(type) { if (DEBUG) dbg.sent[type] = (dbg.sent[type] || 0) + 1; }
+function dbgRecv(type) { if (DEBUG && type in dbg.recv) dbg.recv[type]++; }
+function dbgOutcome(kind, detail) {
+    if (!DEBUG) return;
+    _dbgPush(dbg.outcomes, { t: performance.now(), kind, detail });
+}
+function dbgCancel(level, current) {
+    if (!DEBUG) return;
+    _dbgPush(dbg.cancels, { t: performance.now(), level, current });
+}
+
+
 // ─── Bathymetry-source registry (one source of truth) ──────────
 // Started at module load so it runs in parallel with the ArcGIS
 // `require([...])` dependency load — by the time the require callback
@@ -222,6 +258,13 @@ let nextRequestId = 0;
 
 function onWorkerMessage(ev) {
     const { type, id } = ev.data;
+    if (type === 'debug-stat') {            // [dbg] worker stats poll reply
+        dbg.workerCancelledSize = ev.data.cancelledSize;
+        dbg.workerRasterCache   = ev.data.rasterCache;
+        dbg.workerInflight      = ev.data.inflight;
+        return;
+    }
+    dbgRecv(type);                          // [dbg] count every worker reply
     const slot = pending.get(id);
     if (!slot) {
         // Late arrival: the request was already abandoned (timed out, worker
@@ -275,6 +318,66 @@ function makeWorker() {
 }
 renderWorker = makeWorker();
 
+
+// ─── Debug overlay renderer (?debug=1) ──────────────────────────
+// Polls the worker for its internal set sizes and repaints a fixed
+// corner panel a few times a second. Entirely self-contained — remove
+// this block and the `// [dbg]` hook lines to strip instrumentation.
+if (DEBUG) {
+    const startOverlay = () => {
+        const el = document.createElement('div');
+        el.id = 'ff-debug-overlay';
+        el.style.cssText = [
+            'position:fixed', 'top:8px', 'right:8px', 'z-index:99999',
+            'background:rgba(10,12,16,0.88)', 'color:#cfe', 'padding:8px 10px',
+            'font:11px/1.45 ui-monospace,Menlo,Consolas,monospace',
+            'border:1px solid #2a3340', 'border-radius:6px', 'max-width:360px',
+            'white-space:pre', 'pointer-events:none', 'box-shadow:0 2px 10px rgba(0,0,0,.5)',
+        ].join(';');
+        document.body.appendChild(el);
+
+        const now = () => performance.now();
+        const ageMs = (t) => Math.round(now() - t);
+        const fmtOutcome = (o) => `${String(ageMs(o.t)).padStart(5)}ms  ${o.kind}`;
+        const fmtCancel  = (c) => `${String(ageMs(c.t)).padStart(5)}ms  lvl ${c.level}→cur ${c.current}`;
+
+        const paint = () => {
+            try { renderWorker.postMessage({ type: 'debug-stat' }); } catch { /* mid-reset */ }
+            const s = dbg.sent, r = dbg.recv;
+            const sentTotal = s.render + s.sample + s.cancel;
+            const recvTotal = r.rendered + r.empty + r.error + r.sampled;
+            const lines = [
+                'FishFinder debug  (?debug=1)',
+                `inflight renders : ${dbg.inflightRenders}`,
+                `pending slots    : ${pending.size}   inflightCanvas: ${inflightCanvas.size}`,
+                `canvas LRU       : ${canvasCache.size}`,
+                `currentBathyLevel: ${currentBathyLevel}`,
+                '── worker msgs ──',
+                `sent  ${sentTotal}  (render ${s.render} / sample ${s.sample} / cancel ${s.cancel})`,
+                `recv  ${recvTotal}  (rendered ${r.rendered} / empty ${r.empty} / error ${r.error} / sampled ${r.sampled})`,
+                `worker cancelledIds: ${dbg.workerCancelledSize}   rasterCache: ${dbg.workerRasterCache}   inflight: ${dbg.workerInflight}`,
+                '── last outcomes ──',
+                ...dbg.outcomes.slice().reverse().map(fmtOutcome),
+                '── last stale-zoom cancels ──',
+                ...(dbg.cancels.length ? dbg.cancels.slice().reverse().map(fmtCancel)
+                                       : ['  (none)']),
+            ];
+            el.textContent = lines.join('\n');
+        };
+        paint();
+        setInterval(paint, 300);
+    };
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startOverlay);
+    } else {
+        // Defer past the rest of this module's synchronous evaluation so the
+        // const declarations paint() reads (canvasCache, inflightCanvas) are
+        // already initialised — avoids a temporal-dead-zone ReferenceError
+        // when the script is loaded with the DOM already parsed.
+        setTimeout(startOverlay, 0);
+    }
+}
+
 // Returns { promise, id } — the id lets the caller drop the pending slot
 // if it gives up before the worker responds (timeout), so the late
 // response lands in onWorkerMessage's late-arrival branch and its bitmap
@@ -286,6 +389,7 @@ renderWorker = makeWorker();
 // don't use it the field is undefined and ignored.
 function requestRender(url, analysisKey, param, paramExtra) {
     const id = ++nextRequestId;
+    dbgSent('render');                      // [dbg]
     const promise = new Promise((resolve) => {
         pending.set(id, { resolve });
         renderWorker.postMessage({
@@ -306,6 +410,7 @@ function paramExtraKey(paramExtra) {
 
 function requestSample(url, fracX, fracY) {
     const id = ++nextRequestId;
+    dbgSent('sample');                      // [dbg]
     return new Promise((resolve) => {
         pending.set(id, { resolve });
         renderWorker.postMessage({
@@ -349,6 +454,48 @@ function canvasCacheSet(key, val) {
 // key collapses dupes to a single render.
 const inflightCanvas = new Map();
 
+// Cancel every in-flight worker render and drop the in-flight map. Called
+// on a CUTOVER layer switch only: the layer those renders belonged to is
+// being removed and the new layer uses different cache keys, so the renders
+// are dead weight. Left uncancelled they keep the single-threaded worker
+// busy and queue AHEAD of the new layer's visible tiles — under repeated
+// switching that backlog grows across a session until the new viewport's
+// tiles miss the 20s fetchTile timeout and paint blank.
+function cancelInflightRenders() {
+    for (const entry of inflightCanvas.values()) {
+        if (entry && entry.renderId != null) {
+            try { renderWorker.postMessage({ type: 'cancel', id: entry.renderId }); dbgSent('cancel'); }
+            catch { /* worker mid-reset; its pending was already drained */ }
+        }
+    }
+    inflightCanvas.clear();
+}
+
+// Effective current bathymetry tile level: the integer LOD ArcGIS is
+// actually requesting right now, set from each `fetchTile` call (see the
+// RasterAnalysisLayer below). null until the first tile is requested.
+//
+// It is deliberately driven by fetchTile — NOT by Math.round(view.zoom).
+// The view runs with snapToZoom:false and a 0.25 wheel step, so it sits at
+// fractional zoom almost all the time; round(view.zoom) frequently does not
+// equal the integer LOD ArcGIS draws (e.g. at zoom 8.5 round→9 while ArcGIS
+// requests level 8, and mid wheel-animation round(view.zoom) lags the
+// destination level). fetchTile's `level` is the ground truth.
+//
+// Used to tell a stale-ZOOM tile abort apart from a PAN abort: when ArcGIS
+// aborts a fetchTile whose level no longer matches where the user has
+// zoomed to, that render is dead weight — left running it clogs the
+// single-threaded worker AHEAD of the new level's visible tiles, and under
+// a fast multi-level zoom that backlog grows until the visible tiles miss
+// the 20s timeout and paint blank. A SAME-level abort is a pan: we leave it
+// running so it still warms the LRU (unchanged pan-abort behavior).
+//
+// Using round(view.zoom) here was the "uncached tiles paint grey" bug: at a
+// fractional zoom every pan abort looked like a stale zoom, so the render
+// was cancelled + evicted instead of being left to warm the LRU, and the
+// re-request had nothing cached and resolved to the blank tile.
+let currentBathyLevel = null;
+
 // Safety timeout. A wedged render (worker stuck, fetch hanging) used
 // to leave the fetchTile promise dangling forever, which ArcGIS reads
 // as "still loading, keep the slot empty" — a permanent basemap hole.
@@ -382,11 +529,15 @@ const blankTileCanvas = (() => {
 })();
 
 function renderToCanvas(url, analysisKey, param, paramExtra, key) {
+    // Hoisted out of the IIFE so renderId is known synchronously — the
+    // returned entry exposes it so cancelInflightRenders() can postMessage
+    // a 'cancel' for this exact render on a cutover.
+    const { promise: renderPromise, id: renderId } =
+        requestRender(url, analysisKey, param, paramExtra);
+    if (DEBUG) dbg.inflightRenders++;       // [dbg] paired with finally below
     const work = (async () => {
         let result;
         let timer;
-        const { promise: renderPromise, id: renderId } =
-            requestRender(url, analysisKey, param, paramExtra);
         try {
             result = await Promise.race([
                 renderPromise,
@@ -405,12 +556,15 @@ function renderToCanvas(url, analysisKey, param, paramExtra, key) {
             // than resolving a promise nobody is listening to (which would
             // pin GPU memory until JS GC fires).
             pending.delete(renderId);
+            dbgOutcome('timeout', renderId);   // [dbg]
             console.warn('[render] giving up on tile:', err && err.message || err);
             return blankTileCanvas;
         } finally {
             if (timer) clearTimeout(timer);
+            if (DEBUG) dbg.inflightRenders--;  // [dbg] resolved or timed out
         }
         if (result.status === 'empty') {
+            dbgOutcome('empty', renderId);     // [dbg]
             canvasCacheSet(key, blankTileCanvas);
             return blankTileCanvas;
         }
@@ -418,8 +572,10 @@ function renderToCanvas(url, analysisKey, param, paramExtra, key) {
             // Don't cache. Returning the blank for THIS request keeps
             // ArcGIS happy; the next visit re-issues the render and
             // (hopefully) succeeds.
+            dbgOutcome('error', renderId);     // [dbg]
             return blankTileCanvas;
         }
+        dbgOutcome('success', renderId);       // [dbg]
         const { bitmap, size } = result;
         const canvas = document.createElement('canvas');
         canvas.width = size;
@@ -430,9 +586,9 @@ function renderToCanvas(url, analysisKey, param, paramExtra, key) {
         return canvas;
     })();
     work.finally(() => {
-        if (inflightCanvas.get(key) === work) inflightCanvas.delete(key);
+        if (inflightCanvas.get(key)?.work === work) inflightCanvas.delete(key);
     }).catch(() => { /* already handled */ });
-    return work;
+    return { work, renderId };
 }
 
 // Returns a Promise<canvas>. Honors `signal` so ArcGIS can abort
@@ -440,23 +596,43 @@ function renderToCanvas(url, analysisKey, param, paramExtra, key) {
 // completes in the background and lands in the LRU, ready for the next
 // request, but the fetchTile promise rejects immediately so ArcGIS can
 // redraw the mosaic without waiting on dead work.
-async function getRenderedCanvas(url, analysisKey, param, paramExtra, signal) {
+async function getRenderedCanvas(url, analysisKey, param, paramExtra, signal, level) {
     if (signal && signal.aborted) throw abortError();
     const extraKey = paramExtraKey(paramExtra);
     const key = `${url}|${analysisKey}|${param}|${extraKey}`;
     const hit = canvasCacheGet(key);
-    if (hit) return hit;
+    if (hit) { dbgOutcome('cached'); return hit; }   // [dbg]
 
-    let work = inflightCanvas.get(key);
-    if (!work) {
-        work = renderToCanvas(url, analysisKey, param, paramExtra, key);
-        inflightCanvas.set(key, work);
+    let entry = inflightCanvas.get(key);
+    if (!entry) {
+        entry = renderToCanvas(url, analysisKey, param, paramExtra, key);
+        inflightCanvas.set(key, entry);
     }
+    const work = entry.work;
 
     if (!signal) return work;
 
     return new Promise((resolve, reject) => {
-        const onAbort = () => { cleanup(); reject(abortError()); };
+        const onAbort = () => {
+            cleanup();
+            // Stale-ZOOM abort (this tile's level is no longer where the
+            // user is): drop the render from the worker queue and evict its
+            // inflight entry so a later revisit re-renders. A SAME-level
+            // abort is a pan — fall through and let the render finish so it
+            // warms the LRU. (Cutover flushing is handled separately by
+            // cancelInflightRenders; this path never touches a pan or a
+            // current-level tile.)
+            if (level != null && currentBathyLevel != null
+                && level !== currentBathyLevel
+                && inflightCanvas.get(key)?.work === work
+                && entry.renderId != null) {
+                dbgCancel(level, currentBathyLevel);   // [dbg] stale-zoom cancel
+                try { renderWorker.postMessage({ type: 'cancel', id: entry.renderId }); dbgSent('cancel'); }
+                catch { /* worker mid-reset; its pending was already drained */ }
+                inflightCanvas.delete(key);
+            }
+            reject(abortError());
+        };
         const cleanup = () => signal.removeEventListener('abort', onAbort);
         signal.addEventListener('abort', onAbort);
         work.then(
@@ -690,11 +866,17 @@ require([
             paramExtra: null,
         },
         fetchTile: function (level, row, col, options) {
+            // This is the ground truth for "which LOD is ArcGIS drawing now"
+            // — far more reliable than Math.round(view.zoom) at the fractional
+            // zooms the view normally sits at. getRenderedCanvas reads it to
+            // classify an aborted tile as a pan (same level → keep, warm LRU)
+            // vs. a stale zoom (different level → cancel, drain the worker).
+            currentBathyLevel = level;
             const url = `${baseurl}/raster/${this.source}/${this.resolution}`
                       + `/${level}/${col}/${row}.bin`;
             const signal = options && options.signal;
             return getRenderedCanvas(
-                url, this.analysisKey, this.param, this.paramExtra, signal);
+                url, this.analysisKey, this.param, this.paramExtra, signal, level);
         },
     });
 
@@ -768,6 +950,12 @@ require([
         },
         ui: { components: ["zoom", "attribution"] },
     });
+
+    // NOTE: currentBathyLevel is set from each fetchTile call (see
+    // RasterAnalysisLayer above), NOT from a view.zoom watcher. ArcGIS caps
+    // fetchTile at the layer's LODs (BATHY_MAX_ZOOM), so the value is already
+    // clamped there; past that the deepest level keeps being "current" and
+    // its aborts are correctly treated as pans rather than stale zooms.
 
 
     // ─── Slower wheel zoom ─────────────────────────────────
@@ -964,6 +1152,7 @@ require([
             tearDown(currentLayer, null);
             currentLayer = null;
         }
+        if (mode === "cutover") cancelInflightRenders();
 
         // Bathymetry sits at the very bottom of the overlay stack so any
         // active Spotfinder heatmap + spots paint above it. Inserting at

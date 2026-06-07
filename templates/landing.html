@@ -411,7 +411,7 @@ footer .src b{color:var(--muted)}
   </div>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 // Entrance animations: flag <body> once loaded so hero fade/drift fire.
 window.addEventListener('load', () => document.body.classList.add('loaded'));
 // Failsafe if 'load' is slow (large hero image): trigger shortly after DOM ready.

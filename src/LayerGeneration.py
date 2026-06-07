@@ -221,15 +221,32 @@ def _decode_raster(raw_bytes, expected_size: int, source: DataSource):
 
 def _load_or_fetch(source: DataSource, z: int, x: int, y: int,
                    bbox_mercator, size_px: int, cache_dir: str):
-    """Disk-cached float32 raster for a tile bbox. Array or None."""
+    """Disk-cached float32 raster for a tile bbox. Array or None.
+
+    Only rasters that decode AND carry at least one real sample are ever
+    written to disk. An all-nodata grid is indistinguishable later from
+    genuine no-coverage, so persisting it would turn a transient NOAA
+    empty into a forever-grey tile: the disk cache never expires, the
+    worker reads the all-nodata grid as `empty`, and the client paints an
+    opaque blank under that tile slot for good. Keeping empties out of the
+    cache leaves the tile retryable — the next visit re-fetches and can
+    recover once NOAA serves data again. Same reasoning for undecodable
+    bytes (truncated download, HTML/JSON error page, RGB preview): caching
+    them just means re-reading and re-rejecting the same garbage forever.
+    """
     cache_path = os.path.join(cache_dir, f"{z}_{x}_{y}.tiff")
 
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'rb') as f:
                 arr = _decode_raster(f.read(), size_px, source)
-                if arr is not None:
-                    return arr
+            # Trust a cached grid only if it decodes and holds real data.
+            # An all-nodata file on disk is either a legacy poisoned entry
+            # (written before empties were excluded) or a stale no-coverage
+            # result; treating it as a miss lets the tile recover instead of
+            # rendering grey forever.
+            if arr is not None and not np.isnan(arr).all():
+                return arr
         except OSError as e:
             print(f"[raster] cache read failed for {cache_path}: {e}")
 
@@ -237,14 +254,21 @@ def _load_or_fetch(source: DataSource, z: int, x: int, y: int,
     if raw is None:
         return None
 
-    os.makedirs(cache_dir, exist_ok=True)
-    try:
-        with open(cache_path, 'wb') as f:
-            f.write(raw)
-    except OSError as e:
-        print(f"[raster] cache write failed for {cache_path}: {e}")
+    arr = _decode_raster(raw, size_px, source)
+    if arr is None:
+        # Undecodable body — transient/garbage. Do NOT persist; return None
+        # so the Flask layer reports a retryable failure (HTTP 503).
+        return None
 
-    return _decode_raster(raw, size_px, source)
+    if not np.isnan(arr).all():
+        os.makedirs(cache_dir, exist_ok=True)
+        try:
+            with open(cache_path, 'wb') as f:
+                f.write(raw)
+        except OSError as e:
+            print(f"[raster] cache write failed for {cache_path}: {e}")
+
+    return arr
 
 
 # ---------------------------------------------------------------------------

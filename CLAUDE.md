@@ -240,6 +240,15 @@ parsing the bytes.
 // main → worker
 { type: 'render', id, url, analysisKey, param }
 
+// main → worker (cancel a stale in-flight render so it skips the encode and
+// stops queueing ahead of the tiles the user actually needs). Two triggers:
+//   • cutover layer switch — cancelInflightRenders() flushes every in-flight
+//     render (the layer they belonged to is gone, keys are now wrong).
+//   • stale-ZOOM tile abort — getRenderedCanvas cancels an aborted tile whose
+//     level no longer matches the current zoom (the user zoomed past it). A
+//     SAME-level abort is a pan and is left running to warm the LRU.
+{ type: 'cancel', id }
+
 // worker → main (success — bitmap is transferable)
 { type: 'rendered', id, bitmap, size }
 
@@ -370,6 +379,20 @@ touching Flask — useful for previewing an area or trying a single algorithm.
   to invalidate it. There is no /reset endpoint.
 - **Disk raster cache never expires**: if NOAA changes upstream coverage,
   delete `img/raster/<source>/` to force a refetch.
+- **Only data-bearing rasters are persisted**: `_load_or_fetch` writes a
+  tile to disk only if it decodes AND has at least one non-nodata sample,
+  and it ignores an all-nodata file already on disk (treats it as a miss).
+  This fixes the "tiles randomly render as opaque grey boxes, worse after a
+  broad/global zoom-out then zoom-in, accumulating over a session" bug. Root
+  cause: a single transient NOAA response (an all-nodata grid for a tile that
+  really has data — more likely under the request bursts a broad zoom-out
+  triggers) used to be written to the never-expiring disk cache, after which
+  every future visit read it back as no-coverage; the worker flagged it
+  `empty` and the client painted a permanent opaque blank over that slot.
+  `serve_raster` also sends `Cache-Control: no-store` for an all-nodata tile
+  (data tiles keep the 1-day cache) so the browser HTTP cache can't hold a
+  transient empty across reloads either. Net effect: empties stay retryable
+  at every persistent cache layer; genuine no-coverage simply re-fetches.
 - **Resolution slider applies on release** (`change`), not during drag —
   every intermediate value would otherwise force a fresh raster fetch
   series. The label still updates live.

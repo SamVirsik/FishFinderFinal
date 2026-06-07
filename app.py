@@ -23,8 +23,10 @@ img/raster/. See `static/map.js` and `static/analyses-worker.js`.
 
 import json
 import logging
+import math
 import os
 import re
+import secrets
 import struct
 import threading
 import time
@@ -32,7 +34,9 @@ import uuid
 
 import flask.cli
 import numpy as np
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, g, jsonify, render_template, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from src.LayerGeneration import (
     UNKNOWN_SOURCE,
@@ -76,12 +80,218 @@ flask.cli.show_server_banner = lambda *args, **kwargs: None
 
 app = Flask(__name__)
 
+# Reject oversized request bodies before they're read into memory. The only
+# route that accepts a body is /spotfinder/run, whose payload is a small JSON
+# config (search area + tuning params); 512 KB is far more than that ever
+# needs and stops a multi-megabyte POST from being buffered.
+app.config['MAX_CONTENT_LENGTH'] = 512 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (Flask-Limiter).
+#
+# Keyed by client IP. In-memory storage is intentional: this is a
+# single-process dev/desktop server (app.run, threaded=True), so there is no
+# second worker to share counters with. If this is ever fronted by gunicorn
+# with >1 worker, point storage_uri at redis/memcached so the limits are
+# global rather than per-worker.
+#
+# Budgets are tuned to the app's real traffic shape:
+#   - tile proxy (/raster/...) is bursty — a single pan can request dozens of
+#     tiles, and the prefetch loop warms more — so it gets the largest budget.
+#   - /spotfinder/run is the expensive compute path (multi-megacell numpy +
+#     several NOAA fetches), so it gets the tightest budget.
+#   - the heartbeat keepalive fires ~1 Hz by design and is exempted.
+#   - Flask's built-in static endpoint is exempted (page loads pull many
+#     static assets and they're cheap to serve).
+# ---------------------------------------------------------------------------
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["240 per minute", "4000 per hour"],
+    storage_uri="memory://",
+    strategy="fixed-window",
+    headers_enabled=True,   # emit RateLimit-* + Retry-After so clients can back off
+)
+limiter.init_app(app)
+
+
+@limiter.request_filter
+def _exempt_static():
+    """Skip rate limiting for Flask's static-file endpoint."""
+    return request.endpoint == 'static'
+
+
 # Unique per-process token, regenerated every time the server boots. The
 # map's terms gate stores the token it accepted under alongside acceptance;
 # on each page load the client compares its stored token to this live one
 # (via GET /api/session-token). A mismatch — which always happens after a
 # restart — invalidates the stored acceptance and re-shows the gate.
 _SESSION_TOKEN = uuid.uuid4().hex
+
+
+# ---------------------------------------------------------------------------
+# Content Security Policy + companion security headers.
+#
+# The policy is allow-listed to exactly the origins the viewer loads from:
+#   - ArcGIS JS API (js.arcgis.com) for the map engine, its blob-spawned
+#     Web Workers, and its bundled marker/icon assets.
+#   - unpkg.com for three.js + OrbitControls (the 3D inspector).
+#   - Google Fonts (fonts.googleapis.com stylesheet + fonts.gstatic.com files).
+#   - basemap.nationalmap.gov for USGS basemap tiles (fetched directly by the
+#     ArcGIS TileLayer in the browser).
+#   - 'self' for our own static JS/CSS, the analyses Web Worker, and every
+#     /raster, /sources, /basemaps, /spotfinder XHR (NOAA is proxied through
+#     this server, so the browser never talks to NOAA directly — no NOAA
+#     origin is needed in connect-src).
+#
+# Our own inline <script> blocks (the terms-gate bootstrap, the map_layers
+# injection, the landing-page animation flag) are authorised with a fresh
+# per-request nonce rather than 'unsafe-inline', so an injected inline script
+# can't execute. style-src keeps 'unsafe-inline' because the ArcGIS API sets
+# element style attributes at runtime, which nonces can't cover.
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _make_csp_nonce():
+    g.csp_nonce = secrets.token_urlsafe(16)
+
+
+@app.context_processor
+def _inject_csp_nonce():
+    # Exposes {{ csp_nonce }} to every template so inline <script> tags can
+    # carry the matching nonce.
+    return {'csp_nonce': getattr(g, 'csp_nonce', '')}
+
+
+def _content_security_policy(nonce):
+    return "; ".join([
+        "default-src 'self'",
+        ("script-src 'self' 'nonce-{nonce}' blob: "
+         "https://js.arcgis.com https://unpkg.com").format(nonce=nonce),
+        ("style-src 'self' 'unsafe-inline' "
+         "https://js.arcgis.com https://fonts.googleapis.com"),
+        "img-src 'self' data: blob: https://js.arcgis.com https://basemap.nationalmap.gov",
+        "font-src 'self' data: https://fonts.gstatic.com https://js.arcgis.com",
+        ("connect-src 'self' blob: "
+         "https://js.arcgis.com https://basemap.nationalmap.gov"),
+        "worker-src 'self' blob:",
+        "child-src 'self' blob:",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "frame-ancestors 'self'",
+        "form-action 'self'",
+    ])
+
+
+@app.after_request
+def _security_headers(resp):
+    """Attach CSP + companion hardening headers to every response."""
+    resp.headers['Content-Security-Policy'] = _content_security_policy(
+        getattr(g, 'csp_nonce', ''))
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+    resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    resp.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers.
+#
+# Every value that crosses from the network into the analysis/fetch code is
+# validated here first, so a malformed request returns a clear 400 instead of
+# surfacing deep in numpy/NOAA code as a 500 (or, worse, an unbounded fetch).
+# ---------------------------------------------------------------------------
+
+# Tile-pyramid + raster sizing bounds. resolution feeds the NOAA fetch grid
+# dimension; z/x/y are standard XYZ tile coords. Flask's <int:> converters
+# already reject negatives and non-digits, so these only need upper bounds.
+_MAX_TILE_ZOOM = 24
+_MIN_RASTER_RES = 1
+_MAX_RASTER_RES = 2048
+
+# Geographic bounds (WGS84 degrees) and the largest search box we'll accept.
+_LAT_MIN, _LAT_MAX = -90.0, 90.0
+_LNG_MIN, _LNG_MAX = -180.0, 180.0
+_MAX_SEARCH_DIM_M = 200_000.0   # 200 km on a side — far past any real draw.
+
+
+def _finite(v):
+    """True only for a real (non-NaN, non-inf) float."""
+    try:
+        return math.isfinite(float(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def _valid_lat(v):
+    return _finite(v) and _LAT_MIN <= float(v) <= _LAT_MAX
+
+
+def _valid_lng(v):
+    return _finite(v) and _LNG_MIN <= float(v) <= _LNG_MAX
+
+
+def _validate_tile_request(resolution, z, x, y):
+    """Bounds-check XYZ tile params. Returns an error string or None."""
+    if not (_MIN_RASTER_RES <= resolution <= _MAX_RASTER_RES):
+        return f"resolution out of range ({_MIN_RASTER_RES}..{_MAX_RASTER_RES})"
+    if z > _MAX_TILE_ZOOM:
+        return f"zoom out of range (0..{_MAX_TILE_ZOOM})"
+    # At zoom z there are 2**z tiles per axis; reject coords outside the grid.
+    max_index = (1 << z) - 1
+    if x > max_index or y > max_index:
+        return f"tile x/y out of range for zoom {z} (0..{max_index})"
+    return None
+
+
+def _validate_search_area(area):
+    """Validate the Spotfinder `search_area` payload. Returns error str or None.
+
+    Mirrors exactly the fields run_spotfinder consumes: bbox (n/s/e/w),
+    center (lat/lng), width_m / height_m, rotation_deg, and the corners list.
+    Anything non-numeric, out of geographic range, degenerate, or absurdly
+    large is rejected with a specific message before any NOAA fetch fires.
+    """
+    if not isinstance(area, dict):
+        return "search_area must be an object"
+
+    bbox = area.get("bbox")
+    if not isinstance(bbox, dict):
+        return "search_area.bbox is required"
+    for k in ("north", "south", "east", "west"):
+        if k not in bbox:
+            return f"search_area.bbox.{k} is required"
+    if not (_valid_lat(bbox["north"]) and _valid_lat(bbox["south"])):
+        return "bbox north/south must be valid latitudes"
+    if not (_valid_lng(bbox["east"]) and _valid_lng(bbox["west"])):
+        return "bbox east/west must be valid longitudes"
+    if not (float(bbox["north"]) > float(bbox["south"])
+            and float(bbox["east"]) > float(bbox["west"])):
+        return "bbox must have north > south and east > west"
+
+    center = area.get("center")
+    if not isinstance(center, dict):
+        return "search_area.center is required"
+    if not (_valid_lat(center.get("lat")) and _valid_lng(center.get("lng"))):
+        return "center lat/lng must be valid coordinates"
+
+    for k in ("width_m", "height_m"):
+        v = area.get(k)
+        if not _finite(v) or not (0.0 < float(v) <= _MAX_SEARCH_DIM_M):
+            return f"{k} must be a positive number under {int(_MAX_SEARCH_DIM_M)} m"
+
+    if not _finite(area.get("rotation_deg")):
+        return "rotation_deg must be a number"
+
+    corners = area.get("corners")
+    if not isinstance(corners, (list, tuple)) or len(corners) < 3:
+        return "search_area.corners must list at least 3 points"
+    for c in corners:
+        if not isinstance(c, dict) or not (_valid_lat(c.get("lat"))
+                                           and _valid_lng(c.get("lng"))):
+            return "every corner must have a valid lat/lng"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +311,11 @@ _SESSION_TOKEN = uuid.uuid4().hex
 
 @app.route('/raster/<string:source>/<int:resolution>'
            '/<int:z>/<int:x>/<int:y>.bin')
+@limiter.limit("600 per minute")
 def serve_raster(source, resolution, z, x, y):
+    err = _validate_tile_request(resolution, z, x, y)
+    if err is not None:
+        return jsonify({"error": err}), 400
     result = fetch_tile_raster(source, resolution, z, x, y,
                                raster_root=RASTER_DIR)
     if result is UNKNOWN_SOURCE:
@@ -124,11 +338,20 @@ def serve_raster(source, resolution, z, x, y):
     h, w = arr.shape
     arr32 = np.ascontiguousarray(arr, dtype=np.float32)
 
+    # Don't let the browser HTTP cache hold an all-nodata tile for a day:
+    # an empty grid can be a transient NOAA blip rather than genuine
+    # no-coverage, and a day-long cached empty would keep painting grey
+    # across reloads even after upstream recovers. Data tiles keep the
+    # 1-day cache; empties are revalidated on the next visit. (The disk
+    # cache already refuses to persist empties — see _load_or_fetch.)
+    all_nodata = bool(np.isnan(arr).all())
+    cache_control = 'no-store' if all_nodata else 'public, max-age=86400'
+
     header = struct.pack('<IIfI', w, h, float(cellsize_m), int(buffer_px))
     body = arr32.tobytes(order='C')
     return Response(header + body,
                     mimetype='application/octet-stream',
-                    headers={'Cache-Control': 'public, max-age=86400',
+                    headers={'Cache-Control': cache_control,
                              'Content-Length': str(len(header) + len(body))})
 
 
@@ -146,6 +369,7 @@ def serve_raster(source, resolution, z, x, y):
 # ---------------------------------------------------------------------------
 
 @app.route('/raster/inspect')
+@limiter.limit("60 per minute")
 def serve_inspect_raster():
     source = (request.args.get('source') or '').strip()
     try:
@@ -157,6 +381,10 @@ def serve_inspect_raster():
     except (TypeError, ValueError):
         return jsonify({"error": "missing or invalid query params"}), 400
 
+    # Reject NaN/inf and out-of-range coordinates before any bbox math.
+    if not (_valid_lat(north) and _valid_lat(south)
+            and _valid_lng(east) and _valid_lng(west)):
+        return jsonify({"error": "coordinates out of range"}), 400
     if not (north > south and east > west):
         return jsonify({"error": "invalid bbox"}), 400
     # Size cap: 2048×2048 float32 = 16 MB per response, plenty of headroom
@@ -287,6 +515,7 @@ def session_token():
 
 
 @app.route('/spotfinder/run', methods=['POST'])
+@limiter.limit("10 per minute; 3 per 10 seconds")
 def spotfinder_run():
     """Streaming Spotfinder execution.
 
@@ -306,7 +535,17 @@ def spotfinder_run():
     Flask dev server (threaded=True) flushes immediately, which is what
     matters for local development.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+
+    # Validate the search area up front so a malformed box returns a clean 400
+    # rather than streaming a generic error event after work has begun. The
+    # tuning `config`/`params` are validated/clamped defensively inside
+    # resolve_config(), so they don't need a gate here.
+    area_err = _validate_search_area(payload.get("search_area"))
+    if area_err is not None:
+        return jsonify({"error": area_err}), 400
 
     def stream():
         try:
@@ -374,6 +613,7 @@ def list_basemaps_route():
 
 
 @app.route('/heartbeat', methods=['POST'])
+@limiter.exempt
 def heartbeat():
     """Browser keepalive ping.
 

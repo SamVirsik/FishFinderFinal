@@ -13,7 +13,7 @@
 <!-- Mark the document early (before paint) so the fixed topbar and map
      chrome get shifted down by the disclaimer banner's height. Scoped to
      .ff-has-banner so the shared shell (e.g. /spotfinder) is unaffected. -->
-<script>document.documentElement.classList.add('ff-has-banner');</script>
+<script nonce="{{ csp_nonce }}">document.documentElement.classList.add('ff-has-banner');</script>
 
 <!-- Permanent navigation-safety disclaimer. Pinned to the very top of the
      viewport, above the nav. No dismiss control — it is always present. -->
@@ -526,7 +526,7 @@
      map.js scripts below, so the blurred preview + overlay are in place
      before the map initialises. Reveals #map for JS-enabled visitors and
      shows the gate only on the first visit. -->
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
     var ACCEPT_KEY = 'ff_terms_accepted';
     var TOKEN_KEY = 'ff_session_token';
@@ -617,7 +617,7 @@
      that's the worker scope; in the page it's window. We need the
      page-side copy so the 3D inspector can texture its surface with
      the same algorithms the 2D map uses. -->
-<script>
+<script nonce="{{ csp_nonce }}">
     const map_layers = {{map_layers | tojson}};
 </script>
 <script src="static/analyses.js"></script>

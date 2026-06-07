@@ -27,6 +27,19 @@ const RASTER_CACHE_LIMIT = 256;
 const rasterCache = new Map();
 const inflight = new Map();
 
+// Render ids the main thread has cancelled (cutover layer switch). Checked
+// at handleRender entry and again after fetchRaster resolves so a stale
+// render skips the serial encode bottleneck instead of clogging the
+// single-threaded worker ahead of the new layer's visible tiles. Bounded
+// so a long session can't grow it without limit.
+const cancelledIds = new Set();
+const CANCELLED_IDS_LIMIT = 2048;
+
+function isCancelled(id) {
+    if (cancelledIds.has(id)) { cancelledIds.delete(id); return true; }
+    return false;
+}
+
 function rasterCacheGet(url) {
     if (!rasterCache.has(url)) return undefined;
     const v = rasterCache.get(url);
@@ -104,6 +117,7 @@ function ensureScratch(n) {
 // ─── Render dispatch ──────────────────────────────────────────────────
 
 async function handleRender(id, url, analysisKey, param, paramExtra) {
+    if (isCancelled(id)) { self.postMessage({ type: 'error', id }); return; }
     let raster;
     try {
         raster = await fetchRaster(url);
@@ -121,6 +135,10 @@ async function handleRender(id, url, analysisKey, param, paramExtra) {
         self.postMessage({ type: 'empty', id });
         return;
     }
+
+    // Superseded by a cutover while the fetch was in flight — skip the
+    // expensive serial nodata loop + analysis + createImageBitmap encode.
+    if (isCancelled(id)) { self.postMessage({ type: 'error', id }); return; }
 
     const { w, h, cellsize, bufferPx, data } = raster;
     const n = w * h;
@@ -246,5 +264,18 @@ self.addEventListener('message', (ev) => {
             .catch(() => {
                 self.postMessage({ type: 'sampled', id: msg.id, value: null });
             });
+    } else if (msg.type === 'cancel') {
+        cancelledIds.add(msg.id);
+        if (cancelledIds.size > CANCELLED_IDS_LIMIT) cancelledIds.clear();
+        return;
+    } else if (msg.type === 'debug-stat') {
+        // [dbg] report internal set sizes to the ?debug=1 overlay.
+        self.postMessage({
+            type: 'debug-stat',
+            cancelledSize: cancelledIds.size,
+            rasterCache:   rasterCache.size,
+            inflight:      inflight.size,
+        });
+        return;
     }
 });
