@@ -331,10 +331,26 @@ zoom levels.
 
 ## Data sources
 
-Mapped to NOAA endpoints in `_SOURCE_SPEC` in `src/LayerGeneration.py`:
-`dem-tiles` (default), `dem-all`, `fknms-multibeam`, `bag-bathymetry`,
-`multibeam`, `crm-mosaic`, `dem-global`. All requested at `pixelType=F32` in
-EPSG:3857.
+The source registry is the `SOURCES` tuple in **`src/data_sources.py`** (each
+entry a frozen `DataSource` dataclass) — `src/LayerGeneration.py` and
+`templates/map.html` both read from it via `get_source` / `/sources`. Current
+registry (default `dem-all`): `dem-all`, `bag-bathymetry`, `nos-mbab`,
+`dem-tiles`, `crm-mosaic`, `multibeam`, `dem-global`. All requested at
+`pixelType=F32` in EPSG:3857, ordered by usefulness for the Keys.
+
+All seven were re-verified **live** against NOAA on 2026-06-07 by
+`tools/raster_diagnostics.py` (6 Keys regions × zooms 9–15): every source is
+reachable and returns valid F32 with a wire-format that round-trips to the
+worker; coverage gaps render correctly as no-data. Run that tool after any
+registry edit. `tools/raster_pipeline_test.py` covers the decode/cache/format
+invariants offline (no network).
+
+NOAA fetches retry transient failures (5xx / 429 / connection error) with
+bounded exponential backoff and honor a capped `Retry-After`; deterministic
+failures (4xx, 200-non-image) are not retried. See
+`_fetch_raster_bytes` + the `NOAA_*` constants in `src/LayerGeneration.py`.
+`NOAA_CONCURRENCY=6` is empirically optimal — raising it makes NOAA throttle
+per-request latency and *worsens* wall time.
 
 ## Adding things
 
@@ -348,10 +364,14 @@ EPSG:3857.
 4. Add a config entry in the `ANALYSES` map at the top of `static/map.js`
    (slider label, range, default, hint, intro). The slider auto-rebounds.
 
-**New data source** (touches 2 files):
-1. Add a branch in `_SOURCE_SPEC` in `src/LayerGeneration.py` (URL +
-   `pixelType=F32` + the source's specific nodata sentinel).
-2. Add an `<option>` in the data-source dropdown in `templates/map.html`.
+**New data source** (touches 1-2 files):
+1. Add a `DataSource(...)` entry to the `SOURCES` tuple in
+   `src/data_sources.py` (URL + the source's specific nodata sentinel; set
+   `rendering_rule=_RAW_PIXELS` if the service's default raster function is a
+   colour hillshade, or it returns RGB and the decoder rejects it). The
+   dropdown is populated from `/sources`, so no template edit is needed unless
+   you want a hand-authored `<option>`.
+2. Verify it live with `python tools/raster_diagnostics.py --source <id>`.
 
 **New layer-construction path**: funnel through `applyConfig()` (or
 `scheduleApply()` for high-frequency events). Bypassing it means
@@ -369,12 +389,17 @@ touching Flask — useful for previewing an area or trying a single algorithm.
 
 ## Known quirks
 
-- **Nodata sentinel coverage**: `_decode_raster` masks values with
-  `|v| ≥ 11000`. NOAA's `dem-tiles` and others return literal `-9999` for
-  no-coverage areas, which slips through. Those pixels render as the
-  deepest blue rather than transparent. Either lower the threshold (risks
-  masking real Mariana-Trench-class depths in `dem-global`) or look up the
-  source's specific nodata value from `_SOURCE_SPEC` per call.
+- **Nodata sentinel coverage** (resolved): `_decode_raster` masks `|v| ≥ 11000`
+  *plus* the source's exact `nodata` sentinel from the `SOURCES` registry, so
+  the literal `-9999` that `dem-tiles`/`dem-all`/`crm`/`dem-global` use for
+  no-coverage now round-trips to NaN instead of rendering as deepest blue.
+  Verified by `tools/raster_pipeline_test.py::test_nodata_sentinel_roundtrips_to_nan`
+  and live (0% spurious deep-blue in the 2026-06 diagnostics sweep). The
+  off-size-resize edge case is also handled: `_decode_raster` now builds the
+  nodata mask on the original grid, neutralises sentinels before the bilinear
+  data resize, and resamples the mask with NEAREST — so an edge-of-coverage
+  off-size response can no longer smear -9999 into fake mid-range depths
+  (`test_offsize_resize_does_not_smear_sentinel_into_fake_depth`).
 - **Worker raster cache is in-memory only**: a hard reload is the only way
   to invalidate it. There is no /reset endpoint.
 - **Disk raster cache never expires**: if NOAA changes upstream coverage,

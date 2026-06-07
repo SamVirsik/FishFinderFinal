@@ -29,6 +29,7 @@ reusing connections shaves ~100-200 ms off every fetch after the first.
 import math
 import os
 import threading
+import time
 from io import BytesIO
 
 import numpy as np
@@ -50,7 +51,30 @@ UNKNOWN_SOURCE = object()
 HTTP_TIMEOUT_S = 30
 OUTPUT_TILE_PX = 256
 BUFFER_PX = 16
+
+# NOAA outbound concurrency. Empirically tuned (2026-06 live measurement):
+# at 6 in-flight, 12 cold Keys tiles finish in ~3.5s with per-request p50
+# ~1.3s; at 12 in-flight NOAA throttles and per-request p50 degrades to
+# ~3.8s with WORSE wall time. So 6 is the sweet spot — raising it hurts.
 NOAA_CONCURRENCY = 6
+
+# Transient-failure retry policy for NOAA fetches.
+#
+# A single connection reset, 5xx, or 429 used to surface as one blank tile
+# that stayed blank until the user happened to pan back over it (the client
+# only retries on a fresh fetchTile). NOAA is generally reliable but under a
+# pan-burst of dozens of tiles the occasional transient is expected; a small
+# bounded retry absorbs it invisibly. Kept short so a genuinely-down endpoint
+# still fails fast into the 503 path rather than wedging the tile for 90s.
+#
+#   - Retried: network exceptions (timeout, conn reset), HTTP 5xx, HTTP 429.
+#   - NOT retried: 200-but-not-an-image and 4xx (deterministic — retrying
+#     just re-fetches the same error page).
+#   - 429 Retry-After is honored but capped so one throttled tile can't block
+#     a worker render slot for longer than the client's own 20s timeout.
+NOAA_MAX_RETRIES = 2            # total attempts = 1 + NOAA_MAX_RETRIES
+NOAA_BACKOFF_BASE_S = 0.4       # 0.4s, then 0.8s (×2 per attempt)
+NOAA_RETRY_AFTER_CAP_S = 5.0    # never sleep longer than this on a 429
 
 # Web Mercator constants.
 _R = 6378137.0
@@ -154,26 +178,76 @@ def _build_noaa_params(source: DataSource, bbox_mercator, size_px: int) -> dict:
     return params
 
 
+def _is_transient_status(code: int) -> bool:
+    """HTTP statuses worth retrying: rate-limit (429) and server errors (5xx).
+    4xx (other than 429) are deterministic — retrying re-fetches the same
+    error and just wastes a NOAA slot."""
+    return code == 429 or 500 <= code < 600
+
+
+def _retry_after_seconds(resp, fallback: float) -> float:
+    """Parse a 429/503 Retry-After header (delta-seconds form), capped so a
+    single throttled tile can't outlast the client's render timeout. Falls
+    back to the exponential-backoff value when the header is absent/unparsable."""
+    raw = resp.headers.get('Retry-After')
+    if raw:
+        try:
+            return min(max(float(raw), 0.0), NOAA_RETRY_AFTER_CAP_S)
+        except (TypeError, ValueError):
+            pass  # HTTP-date form is rare here; fall back to backoff
+    return min(fallback, NOAA_RETRY_AFTER_CAP_S)
+
+
 def _fetch_raster_bytes(source: DataSource, bbox_mercator, size_px: int):
-    """GET an EPSG:3857 raster from NOAA. Returns raw image bytes or None."""
+    """GET an EPSG:3857 raster from NOAA, with bounded retry on transient
+    failures. Returns raw image bytes, or None on a non-transient failure or
+    after exhausting retries.
+
+    The semaphore is acquired per attempt and released across the backoff
+    sleep, so a tile waiting out its backoff does NOT hold one of the six
+    NOAA slots hostage from other tiles.
+    """
     params = _build_noaa_params(source, bbox_mercator, size_px)
 
-    with _noaa_semaphore:
-        try:
-            resp = _session.get(source.url, params=params,
-                                timeout=source.timeout_s)
-        except requests.RequestException as e:
-            print(f"[NOAA] {source.id}: request failed: {e}")
-            return None
+    for attempt in range(NOAA_MAX_RETRIES + 1):
+        with _noaa_semaphore:
+            try:
+                resp = _session.get(source.url, params=params,
+                                    timeout=source.timeout_s)
+            except requests.RequestException as e:
+                # Network-level failure (timeout, conn reset) — transient.
+                if attempt < NOAA_MAX_RETRIES:
+                    delay = NOAA_BACKOFF_BASE_S * (2 ** attempt)
+                    print(f"[NOAA] {source.id}: request failed ({e}); "
+                          f"retry {attempt + 1}/{NOAA_MAX_RETRIES} in {delay:.1f}s")
+                else:
+                    print(f"[NOAA] {source.id}: request failed after "
+                          f"{NOAA_MAX_RETRIES} retries: {e}")
+                    return None
+                time.sleep(delay)
+                continue
 
-    if resp.status_code != 200:
+        if resp.status_code == 200:
+            if 'image' not in resp.headers.get('Content-Type', ''):
+                # Deterministic: a 200 HTML/JSON error page. Don't retry.
+                print(f"[NOAA] {source.id}: unexpected content-type "
+                      f"{resp.headers.get('Content-Type')!r}")
+                return None
+            return resp.content
+
+        if _is_transient_status(resp.status_code) and attempt < NOAA_MAX_RETRIES:
+            delay = _retry_after_seconds(
+                resp, NOAA_BACKOFF_BASE_S * (2 ** attempt))
+            print(f"[NOAA] {source.id}: HTTP {resp.status_code}; "
+                  f"retry {attempt + 1}/{NOAA_MAX_RETRIES} in {delay:.1f}s")
+            time.sleep(delay)
+            continue
+
+        # Non-transient status, or transient but out of retries.
         print(f"[NOAA] {source.id}: HTTP {resp.status_code}")
         return None
-    if 'image' not in resp.headers.get('Content-Type', ''):
-        print(f"[NOAA] {source.id}: unexpected content-type "
-              f"{resp.headers.get('Content-Type')!r}")
-        return None
-    return resp.content
+
+    return None
 
 
 def _decode_raster(raw_bytes, expected_size: int, source: DataSource):
@@ -195,28 +269,46 @@ def _decode_raster(raw_bytes, expected_size: int, source: DataSource):
         return None
     arr = arr.astype(np.float32, copy=False)
 
+    # Identify nodata on the ORIGINAL grid, BEFORE any resampling. The
+    # |v|>=11000 fallback catches large-magnitude sentinels (-32768, ±1e6, …);
+    # several NOAA sources use -9999, which sits inside the plausible-elevation
+    # range, so we also mask the source's exact sentinel. Masking up-front is
+    # what makes the worker's all-nodata-tile detection trigger and stops
+    # no-coverage pixels rendering as "very deep water".
+    if source.nodata is not None:
+        mask = ((np.abs(arr) >= 11000.0)
+                | (arr == np.float32(source.nodata)))
+    else:
+        mask = np.abs(arr) >= 11000.0
+
     # Resize if NOAA returned slightly-off dimensions (happens on edge-of-
-    # coverage requests). Bilinear keeps elevation values continuous.
+    # coverage requests). Resample the data and the nodata mask SEPARATELY:
+    #   - mask with NEAREST so nodata stays exactly nodata (no half-sentinel
+    #     cells), and
+    #   - data with BILINEAR for continuity — but only AFTER neutralising the
+    #     sentinels, because bilinear across a -9999 boundary smears the
+    #     sentinel into adjacent real cells and produces plausible-looking
+    #     FAKE depths (e.g. -5000 m) right at the coverage edge. We fill the
+    #     sentinel cells with the median of the valid data first; those cells
+    #     are masked out afterward anyway, and edge real-cells now blend with
+    #     a sane neighbour instead of an extreme sentinel.
     if arr.shape != (expected_size, expected_size):
-        arr = np.asarray(
-            Image.fromarray(arr).resize((expected_size, expected_size),
-                                        Image.BILINEAR),
+        valid = arr[~mask]
+        fill = float(np.median(valid)) if valid.size else 0.0
+        data = np.where(mask, np.float32(fill), arr)
+        data = np.asarray(
+            Image.fromarray(data).resize((expected_size, expected_size),
+                                         Image.BILINEAR),
             dtype=np.float32,
         )
+        mask = np.asarray(
+            Image.fromarray(mask.astype(np.uint8)).resize(
+                (expected_size, expected_size), Image.NEAREST),
+            dtype=bool,
+        )
+        arr = data
 
-    # Coerce sentinel nodata to NaN. The |v|>=11000 fallback catches the
-    # large-magnitude sentinels (-32768, +/-1e6, ...), but several NOAA
-    # sources use -9999, which sits inside the plausible-elevation range
-    # and slips through. Masking the source-specific sentinel exactly fixes
-    # the "looks like very deep water at no-coverage pixels" artifact and
-    # lets the worker's all-nodata-tile detection actually trigger.
-    if source.nodata is not None:
-        arr = np.where(
-            (np.abs(arr) >= 11000.0) | (arr == np.float32(source.nodata)),
-            np.nan, arr)
-    else:
-        arr = np.where(np.abs(arr) >= 11000.0, np.nan, arr)
-    return arr
+    return np.where(mask, np.nan, arr)
 
 
 def _load_or_fetch(source: DataSource, z: int, x: int, y: int,
