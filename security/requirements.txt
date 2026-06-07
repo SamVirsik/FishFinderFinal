@@ -1,0 +1,12 @@
+# Security test suite dependencies. Kept separate from the app's
+# requirements.txt so the production image never pulls test tooling.
+#
+#   pip install -r security/requirements.txt
+#
+# The app itself (flask, numpy, scipy, tifffile, requests, …) must also be
+# installed for the integration and load layers, since they boot the real
+# app — install the project requirements.txt as well for those layers.
+
+pytest>=8.0
+pytest-json-report>=1.5.0   # --json-report result collection consumed by run_security.py
+requests>=2.31              # black-box HTTP client for the integration/load layers

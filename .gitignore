@@ -22,3 +22,7 @@ Thumbs.db
 
 # Claude Code local state
 .claude/
+
+# Security suite generated reports (keep the dir, ignore its contents)
+security/reports/*
+!security/reports/.gitkeep
