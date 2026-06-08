@@ -28,13 +28,32 @@ pip install -r requirements.txt
 ### 1. `static/` — static analysis (always runs)
 
 Source- and config-level checks that need **no running server**. They read
-the code and dependency manifests and assert on shape, for example:
+the code and dependency manifests and assert on shape. Coverage is grouped by
+category, one file per area:
 
-- the Flask bind stays `127.0.0.1`, never `0.0.0.0`
-- `debug=False` and can't be flipped on from the environment
-- no hardcoded secrets / `SECRET_KEY` in source
-- security headers (CSP, XCTO, XFO) are present in `_security_headers`
-- request-path strings never reach a filesystem path component
+- `test_static.py` — server bind stays `127.0.0.1`, `debug=False`, no
+  hardcoded secrets in `src/`, rate-limit decorators on expensive routes,
+  no bare `print()`, and the raster/Spotfinder size caps are sane.
+- `test_secrets.py` — full-tree credential scan (.py/.js/.html/config/`.env`)
+  for provider key/token/JWT/PEM/connection-string formats and secret-named
+  literals in code.
+- `test_flask_config.py` — `DEBUG` unreachable by any path, `SECRET_KEY` not a
+  weak literal, and `SESSION_COOKIE_SECURE/HTTPONLY/SAMESITE` set safely.
+- `test_headers.py` — CSP (no `unsafe-eval`, `object-src 'none'`), XCTO,
+  XFO, Referrer-Policy, COOP present; no wildcard CORS.
+- `test_dangerous_patterns.py` — no `eval`/`exec`/`os.system`/`shell=True`/
+  `pickle.loads`/unsafe-`yaml`/string-built SQL (Python) or `eval`/
+  `new Function`/`document.write` (JS).
+- `test_rate_limiting.py` — every route covered by an explicit limit, an
+  explicit exempt, or the global `default_limits`; expensive routes tighter.
+- `test_input_validation.py` — every `request.*`-reading handler shows a
+  validation/clamping guard; the shared validators and body-size cap exist.
+- `test_dependencies.py` — `requirements.txt` floors audited against a static,
+  offline known-CVE list; every dependency carries a version constraint.
+
+The suite-only file `_sources.py` centralises the app-source file walk (and
+deliberately excludes `security/` and `.claude/` so the scanners never flag
+themselves or the agent harness).
 
 Fast, deterministic, dependency-light. **Safe in CI** — this is the layer
 that always runs.
