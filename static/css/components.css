@@ -119,6 +119,24 @@
   color: var(--ff-accent);
 }
 
+/* Outline — transparent body, hairline border. Used for the compact
+   "Launch Map" action in the topbar where a filled cyan button would
+   over-weight the understated header. Promotes to cyan on hover/focus. */
+.ff-btn--outline {
+  background: transparent;
+  color: var(--ff-text);
+  border-color: var(--ff-border-strong);
+}
+
+.ff-btn--outline:hover {
+  border-color: var(--ff-accent);
+  color: var(--ff-accent);
+}
+
+.ff-btn--outline:hover .ff-btn__icon {
+  transform: translateX(3px);
+}
+
 /* Ghost — text-only, lowest emphasis. */
 .ff-btn--ghost {
   background: transparent;

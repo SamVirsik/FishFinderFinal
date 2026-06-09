@@ -1,9 +1,26 @@
 /* ===========================================================================
    FishFinder — Landing page
    ---------------------------------------------------------------------------
-   Page-specific layout for the marketing landing page. A spacious version of
-   the same design system used by the app: same palette, typography, logo, and
-   buttons (tokens.css + components.css). No new colors are introduced here.
+   Page-specific layout for the marketing landing page. A spacious application
+   of the shared "Deep Ocean" design system (tokens.css + components.css):
+   same palette, typography, logo, and buttons. No new colors are introduced
+   here — the bathymetric imagery carries the visual richness, the surrounding
+   UI stays calm and precise.
+
+   Structure
+   ---------
+   1. Topbar      — full-bleed bar; bg + border span the viewport, nav content
+                    constrained to the centered page container
+   2. Hero        — full-bleed bathymetry background, copy faded over the
+                    darkened left side; image dissolves into the page on all
+                    four edges via layered scrims
+   3. Proof       — three compact icon proof points
+   4. Features    — four alternating image/copy product sections
+   5. Final CTA   — centered, spacious
+   6. Footer      — brand, source acknowledgment, legal + safety disclaimer
+
+   Shared sub-pages (Data / Pricing / About) reuse the topbar/footer here plus
+   the generic page-* / data-* / price-* blocks at the bottom of this file.
    =========================================================================== */
 
 /* --- Topbar --------------------------------------------------------------- */
@@ -14,8 +31,9 @@
   height: var(--ff-topbar-h);
   display: flex;
   align-items: center;
-  background: rgba(7, 11, 18, 0.82);
-  backdrop-filter: blur(10px);
+  background: rgba(7, 11, 18, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--ff-border);
 }
 
@@ -23,27 +41,52 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--ff-space-5);
 }
 
-.landing-topbar nav {
+.landing-topbar .ff-brand__logo {
+  height: 28px;
+}
+
+.landing-topbar .ff-brand__name {
+  font-size: var(--ff-text-lg);
+}
+
+.landing-nav {
   display: flex;
   align-items: center;
   gap: var(--ff-space-6);
 }
 
-.landing-topbar nav a.nav-link {
+.landing-nav__links {
+  display: flex;
+  align-items: center;
+  gap: var(--ff-space-6);
+}
+
+.landing-nav a.nav-link {
   font-size: var(--ff-text-sm);
   font-weight: var(--ff-weight-medium);
   color: var(--ff-muted);
   transition: color var(--ff-transition);
 }
 
-.landing-topbar nav a.nav-link:hover {
+.landing-nav a.nav-link:hover {
   color: var(--ff-text);
 }
 
-@media (max-width: 640px) {
-  .landing-topbar nav .nav-link {
+.landing-nav a.nav-link--active {
+  color: var(--ff-text);
+}
+
+.landing-nav .ff-btn {
+  --_pad-y: 0.55rem;
+  --_pad-x: 1.1rem;
+  font-size: var(--ff-text-sm);
+}
+
+@media (max-width: 720px) {
+  .landing-nav__links {
     display: none;
   }
 }
@@ -54,23 +97,78 @@
 }
 
 /* --- Hero ----------------------------------------------------------------- */
+/* The bathymetry is a full-bleed background filling the whole hero. Layered
+   scrims (painted in --ff-bg) darken the left for readable copy and dissolve
+   the image into the page on the top, bottom, and right edges — so there is
+   no rectangular image, only atmosphere. */
 .hero {
-  padding-block: var(--ff-space-9) var(--ff-space-7);
-  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero__bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.hero__bg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 62% 50%;
+}
+
+.hero__bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    /* Left wash — the contrast bed under the copy. */
+    linear-gradient(90deg,
+      var(--ff-bg) 0%,
+      rgba(7, 11, 18, 0.94) 20%,
+      rgba(7, 11, 18, 0.62) 42%,
+      rgba(7, 11, 18, 0.22) 66%,
+      rgba(7, 11, 18, 0) 86%),
+    /* Top + bottom settle into the page. */
+    linear-gradient(180deg,
+      var(--ff-bg) 0%,
+      rgba(7, 11, 18, 0) 16%,
+      rgba(7, 11, 18, 0) 68%,
+      var(--ff-bg) 100%),
+    /* Right edge fade. */
+    linear-gradient(270deg,
+      var(--ff-bg) 0%,
+      rgba(7, 11, 18, 0) 14%);
+}
+
+.hero__inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  min-height: min(78vh, 720px);
+  padding-block: var(--ff-space-9) var(--ff-space-8);
+}
+
+.hero__copy {
+  max-width: 36rem;
 }
 
 .hero__headline {
-  margin: var(--ff-space-5) auto var(--ff-space-4);
-  max-width: 16ch;
+  margin: var(--ff-space-4) 0 var(--ff-space-5);
+  max-width: 14ch;
   font-size: var(--ff-h1);
   font-weight: var(--ff-weight-bold);
-  line-height: 1.05;
+  line-height: 1.04;
   letter-spacing: var(--ff-tracking-tight);
 }
 
 .hero__sub {
-  margin: 0 auto var(--ff-space-6);
-  max-width: 56ch;
+  margin: 0 0 var(--ff-space-6);
+  max-width: 44ch;
   font-size: var(--ff-text-lg);
   color: var(--ff-muted);
   line-height: 1.55;
@@ -80,94 +178,120 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--ff-space-4);
-  justify-content: center;
   align-items: center;
 }
 
-.hero__shot {
-  margin-top: var(--ff-space-8);
+@media (max-width: 880px) {
+  .hero__inner {
+    min-height: min(70vh, 580px);
+    padding-block: var(--ff-space-8) var(--ff-space-7);
+  }
+  .hero__headline {
+    max-width: 18ch;
+  }
 }
 
-.hero__shot .ff-frame {
-  max-width: 1040px;
-  margin-inline: auto;
+@media (max-width: 600px) {
+  /* Narrow screens read best with a bottom-heavy wash so the top-left copy
+     stays legible over a tighter crop of the image. */
+  .hero__bg img {
+    object-position: 66% 40%;
+  }
+  .hero__bg::after {
+    background:
+      linear-gradient(180deg,
+        rgba(7, 11, 18, 0.55) 0%,
+        rgba(7, 11, 18, 0.74) 46%,
+        var(--ff-bg) 94%),
+      linear-gradient(90deg,
+        var(--ff-bg) 0%,
+        rgba(7, 11, 18, 0.45) 38%,
+        rgba(7, 11, 18, 0.12) 100%);
+  }
+  .hero__inner {
+    align-items: flex-start;
+    min-height: 76vh;
+  }
 }
 
-/* Restrained window chrome for the product screenshot. */
-.shot-chrome {
-  display: flex;
-  align-items: center;
-  gap: var(--ff-space-2);
-  padding: var(--ff-space-3) var(--ff-space-4);
-  background: var(--ff-surface);
+/* --- Proof points (compact, icon-led, NOT cards) -------------------------- */
+.proof {
+  border-top: 1px solid var(--ff-border);
   border-bottom: 1px solid var(--ff-border);
 }
 
-.shot-chrome .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: var(--ff-radius-pill);
-  background: var(--ff-border-strong);
+.proof .ff-container {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--ff-space-7);
+  padding-block: var(--ff-space-6);
 }
 
-.shot-chrome .addr {
-  margin-left: var(--ff-space-3);
-  font-family: var(--ff-font-mono);
-  font-size: var(--ff-text-xs);
-  color: var(--ff-faint);
-  letter-spacing: 0.02em;
+.proof__item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--ff-space-4);
+  row-gap: var(--ff-space-1);
+  align-items: start;
 }
 
-/* --- Stat strip ----------------------------------------------------------- */
-.stats {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--ff-space-8);
-  padding-block: var(--ff-space-7);
-  text-align: center;
+.proof__icon {
+  grid-row: 1 / span 2;
+  width: 26px;
+  height: 26px;
+  color: var(--ff-accent);
+  flex-shrink: 0;
 }
 
-.stat__num {
-  font-family: var(--ff-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 1.75rem;
+.proof__title {
+  font-size: var(--ff-text-base);
   font-weight: var(--ff-weight-semibold);
+  letter-spacing: -0.005em;
   color: var(--ff-text);
-  line-height: 1;
 }
 
-.stat__lbl {
-  margin-top: var(--ff-space-2);
-  font-size: var(--ff-text-xs);
-  letter-spacing: var(--ff-tracking-label);
-  text-transform: uppercase;
-  color: var(--ff-faint);
+.proof__desc {
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .proof .ff-container {
+    grid-template-columns: 1fr;
+    gap: var(--ff-space-5);
+  }
 }
 
 /* --- Features ------------------------------------------------------------- */
 .features {
-  padding-block: var(--ff-space-5);
+  padding-block: var(--ff-space-7);
 }
 
 .feature {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   gap: var(--ff-space-8);
   align-items: center;
   padding-block: var(--ff-space-8);
 }
 
-.feature.flip .feature__media {
+.feature + .feature {
+  border-top: 1px solid var(--ff-border);
+}
+
+/* Even features flip: copy on the right, media on the left. */
+.feature--flip .feature__media {
   order: 2;
 }
 
-.feature.flip .feature__copy {
+.feature--flip .feature__copy {
   order: 1;
 }
 
 .feature__copy h2 {
   margin: var(--ff-space-3) 0 var(--ff-space-4);
+  max-width: 18ch;
   font-size: var(--ff-h2);
   font-weight: var(--ff-weight-bold);
   line-height: 1.1;
@@ -175,30 +299,50 @@
 }
 
 .feature__copy p {
-  max-width: 46ch;
+  max-width: 48ch;
   color: var(--ff-muted);
   font-size: var(--ff-text-lg);
+  line-height: 1.55;
 }
 
-.feature__tags {
-  display: flex;
-  flex-wrap: wrap;
+.feature__points {
+  margin: var(--ff-space-5) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
   gap: var(--ff-space-2);
-  margin-top: var(--ff-space-5);
+}
+
+.feature__points li {
+  position: relative;
+  padding-left: var(--ff-space-5);
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+}
+
+.feature__points li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ff-radius-pill);
+  background: var(--ff-accent);
 }
 
 .feature__media {
   position: relative;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 880px) {
   .feature {
     grid-template-columns: 1fr;
     gap: var(--ff-space-5);
     padding-block: var(--ff-space-6);
   }
-  .feature.flip .feature__media,
-  .feature.flip .feature__copy {
+  .feature--flip .feature__media,
+  .feature--flip .feature__copy {
     order: 0;
   }
 }
@@ -209,9 +353,15 @@
   text-align: center;
 }
 
+.final .ff-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 .final h2 {
   margin: var(--ff-space-4) auto var(--ff-space-4);
-  max-width: 20ch;
+  max-width: 18ch;
   font-size: var(--ff-h2);
   font-weight: var(--ff-weight-bold);
   line-height: 1.08;
@@ -220,40 +370,59 @@
 
 .final p {
   margin-bottom: var(--ff-space-6);
+  max-width: 52ch;
   color: var(--ff-muted);
   font-size: var(--ff-text-lg);
 }
 
 /* --- Footer --------------------------------------------------------------- */
+/* Compact footnote: brand on the left, a single small attribution + safety
+   disclaimer flowing alongside it — a footer footnote, not a content block. */
 .landing-footer {
   border-top: 1px solid var(--ff-border);
-  padding-block: var(--ff-space-6);
+  padding-block: var(--ff-space-5);
 }
 
 .landing-footer .ff-container {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--ff-space-4);
+  gap: var(--ff-space-3) var(--ff-space-6);
 }
 
-.landing-footer .footer__meta {
-  font-size: var(--ff-text-sm);
+.footer__note {
+  flex: 1 1 34rem;
+  min-width: 0;
+  font-size: var(--ff-text-xs);
   color: var(--ff-faint);
+  line-height: 1.5;
 }
 
-.landing-footer .footer__meta b {
+.footer__note strong {
   color: var(--ff-muted);
-  font-weight: var(--ff-weight-medium);
+  font-weight: var(--ff-weight-semibold);
 }
 
+/* Legal bar — terms, privacy, copyright. */
 .legal-bar {
   border-top: 1px solid var(--ff-border);
   padding-block: var(--ff-space-5);
-  text-align: center;
+}
+
+.legal-bar .ff-container {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ff-space-3);
   font-size: var(--ff-text-sm);
   color: var(--ff-faint);
+}
+
+.legal-bar__links {
+  display: flex;
+  align-items: center;
+  gap: var(--ff-space-5);
 }
 
 .legal-bar a {
@@ -268,7 +437,7 @@
 /* --- Reveal-on-scroll (subtle, reduced-motion safe) ----------------------- */
 .reveal {
   opacity: 0;
-  transform: translateY(24px);
+  transform: translateY(22px);
   transition: opacity 0.6s var(--ff-ease), transform 0.6s var(--ff-ease);
 }
 
@@ -283,4 +452,256 @@
     transform: none;
     transition: none;
   }
+}
+
+/* ===========================================================================
+   Shared sub-pages (Data / Pricing / About)
+   ---------------------------------------------------------------------------
+   Same Deep Ocean system, same topbar + footer as the landing page. These
+   generic blocks give each sub-page a calm, centered header followed by
+   container-bound content sections — no page-specific colors introduced.
+   =========================================================================== */
+
+/* Page header — centered eyebrow + headline + lead. */
+.page-head {
+  text-align: center;
+  padding-block: var(--ff-space-9) var(--ff-space-7);
+  border-bottom: 1px solid var(--ff-border);
+}
+
+.page-head .ff-eyebrow {
+  justify-content: center;
+}
+
+.page-head h1 {
+  margin: var(--ff-space-4) auto var(--ff-space-4);
+  max-width: 20ch;
+  font-size: var(--ff-h1);
+  font-weight: var(--ff-weight-bold);
+  line-height: 1.05;
+  letter-spacing: var(--ff-tracking-tight);
+}
+
+.page-head p {
+  margin: 0 auto;
+  max-width: 56ch;
+  color: var(--ff-muted);
+  font-size: var(--ff-text-lg);
+  line-height: 1.55;
+}
+
+/* Content sections. */
+.page-section {
+  padding-block: var(--ff-space-8);
+}
+
+.page-section + .page-section {
+  border-top: 1px solid var(--ff-border);
+}
+
+.section-title {
+  margin: 0 0 var(--ff-space-3);
+  font-size: var(--ff-h2);
+  font-weight: var(--ff-weight-bold);
+  line-height: 1.12;
+  letter-spacing: var(--ff-tracking-tight);
+}
+
+.section-lead {
+  margin: 0 0 var(--ff-space-6);
+  max-width: 60ch;
+  color: var(--ff-muted);
+  font-size: var(--ff-text-lg);
+  line-height: 1.55;
+}
+
+/* Prose column for longer copy (About). */
+.prose {
+  max-width: 64ch;
+}
+
+/* About page — centered composition to match the rest of the site. The hero
+   already uses the centered .page-head; here the section headings and the
+   prose/stat columns center on the page too, while prose TEXT stays
+   left-aligned for readability. */
+.page-about .page-section {
+  text-align: center;
+}
+
+.page-about .section-title {
+  margin-inline: auto;
+}
+
+.page-about .prose {
+  margin-inline: auto;
+  text-align: left;
+}
+
+.page-about .stat-row {
+  text-align: left;
+}
+
+.prose p {
+  margin: 0 0 var(--ff-space-5);
+  color: var(--ff-muted);
+  font-size: var(--ff-text-lg);
+  line-height: 1.7;
+}
+
+.prose p:last-child {
+  margin-bottom: 0;
+}
+
+/* Stat row (About / Data). */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--ff-space-6);
+}
+
+.stat__num {
+  font-size: 2.25rem;
+  font-weight: var(--ff-weight-bold);
+  letter-spacing: -0.02em;
+  color: var(--ff-text);
+}
+
+.stat__label {
+  margin-top: var(--ff-space-1);
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+}
+
+/* Data-source cards. */
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+  gap: var(--ff-space-5);
+}
+
+.data-card {
+  padding: var(--ff-space-5);
+  background: var(--ff-bg-raised);
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-lg);
+}
+
+.data-card__meta {
+  font-family: var(--ff-font-mono);
+  font-size: var(--ff-text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ff-accent);
+  margin-bottom: var(--ff-space-2);
+}
+
+.data-card__name {
+  font-size: var(--ff-text-base);
+  font-weight: var(--ff-weight-semibold);
+  color: var(--ff-text);
+  margin-bottom: var(--ff-space-3);
+}
+
+.data-card p {
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+  line-height: 1.55;
+}
+
+/* Name-only cards: tighter padding, no trailing margin under the name. */
+.data-grid--compact .data-card {
+  padding: var(--ff-space-4) var(--ff-space-5);
+}
+
+.data-grid--compact .data-card__name {
+  margin-bottom: 0;
+}
+
+/* Pricing card. */
+.price-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ff-space-4);
+  padding: var(--ff-space-6);
+  background: var(--ff-bg-raised);
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-lg);
+}
+
+.price-card--featured {
+  border-color: var(--ff-accent);
+  box-shadow: var(--ff-shadow);
+}
+
+/* Single free callout — centered card, comfortably narrow. The feature list
+   stays left-aligned for legibility while the rest of the card centers. */
+.price-card--solo {
+  max-width: 32rem;
+  margin-inline: auto;
+  align-items: center;
+  text-align: center;
+}
+
+.price-card--solo .price-card__features {
+  text-align: left;
+}
+
+.price-card__name {
+  font-size: var(--ff-text-xl);
+  font-weight: var(--ff-weight-bold);
+}
+
+.price-card__price {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ff-space-2);
+}
+
+.price-card__amount {
+  font-size: 2.5rem;
+  font-weight: var(--ff-weight-bold);
+  letter-spacing: -0.02em;
+  color: var(--ff-text);
+}
+
+.price-card__period {
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+}
+
+.price-card__desc {
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+  line-height: 1.55;
+}
+
+.price-card__features {
+  list-style: none;
+  display: grid;
+  gap: var(--ff-space-3);
+  margin: 0;
+  padding: 0;
+}
+
+.price-card__features li {
+  position: relative;
+  padding-left: var(--ff-space-5);
+  font-size: var(--ff-text-sm);
+  color: var(--ff-muted);
+}
+
+.price-card__features li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.5em;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ff-radius-pill);
+  background: var(--ff-accent);
+}
+
+.price-card .ff-btn {
+  margin-top: auto;
+  width: 100%;
 }

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data — FishFinder</title>
+<meta name="description" content="The bathymetric and elevation sources behind FishFinder: survey-grade NOAA and USGS depth data served at full resolution and rendered in your browser.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body>
+
+{% set active = 'data' %}
+{% include '_topbar.html' %}
+
+<main>
+
+<section class="page-head">
+  <div class="ff-container">
+    <span class="ff-eyebrow">Data</span>
+    <h1>Survey-grade depth, served raw.</h1>
+    <p>FishFinder is built on public bathymetric and elevation data from NOAA and the USGS. The server fetches raw float32 depth grids and the browser does the rest — every color, hillshade, and slope is computed client-side from the real numbers.</p>
+  </div>
+</section>
+
+<section class="page-section">
+  <div class="ff-container">
+    <h2 class="section-title">Sources</h2>
+    <p class="section-lead">Six public bathymetric sources from NOAA and the USGS, plus satellite imagery for cross-reference. Coverage varies by region — switch sources to compare what you see.</p>
+    <div class="data-grid data-grid--compact">
+
+      <div class="data-card">
+        <div class="data-card__meta">NOAA · DEM</div>
+        <div class="data-card__name">Continuously Updated DEM</div>
+      </div>
+
+      <div class="data-card">
+        <div class="data-card__meta">NOAA · BAG</div>
+        <div class="data-card__name">BAG Bathymetry</div>
+      </div>
+
+      <div class="data-card">
+        <div class="data-card__meta">NOAA · NOS</div>
+        <div class="data-card__name">NOS Multibeam</div>
+      </div>
+
+      <div class="data-card">
+        <div class="data-card__meta">NOAA · CRM</div>
+        <div class="data-card__name">Coastal Relief Model</div>
+      </div>
+
+      <div class="data-card">
+        <div class="data-card__meta">USGS · Global</div>
+        <div class="data-card__name">Global Topobathy</div>
+      </div>
+
+      <div class="data-card">
+        <div class="data-card__meta">Imagery</div>
+        <div class="data-card__name">Satellite basemaps</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section class="page-section">
+  <div class="ff-container">
+    <h2 class="section-title">How it's served</h2>
+    <p class="section-lead">The depth values you read are exactly the values that produced the colored pixels on screen — no separate sampling path, no mosaic-rule ambiguity.</p>
+    <div class="stat-row">
+      <div>
+        <div class="stat__num ff-numeral">F32</div>
+        <div class="stat__label">Raw float32 elevation grids, decoded in a Web Worker.</div>
+      </div>
+      <div>
+        <div class="stat__num ff-numeral">6</div>
+        <div class="stat__label">Bathymetric sources plus satellite imagery to compare.</div>
+      </div>
+      <div>
+        <div class="stat__num ff-numeral">0</div>
+        <div class="stat__label">Server-side colorization — every analysis runs in your browser.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section final">
+  <div class="ff-container">
+    <span class="ff-eyebrow" style="justify-content:center">See it for yourself</span>
+    <h2>Read the bottom from real data.</h2>
+    <p>Open the map and click anywhere for the exact charted depth.</p>
+    <a class="ff-btn ff-btn--primary ff-btn--lg" href="/map">
+      Launch Map
+      <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+    </a>
+  </div>
+</section>
+
+</main>
+
+{% include '_footer.html' %}
+
+</body>
+</html>

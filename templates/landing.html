@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FishFinder — Understand the ocean floor.</title>
-<meta name="description" content="High-resolution bathymetry and terrain analysis for anglers and divers. FishFinder renders NOAA and USGS depth data so you can read seafloor structure before you go.">
+<meta name="description" content="FishFinder is a marine terrain-analysis platform that renders high-resolution NOAA and USGS bathymetry in the browser. Read seafloor structure, detect spots, and inspect terrain in 3D — built for anglers and divers.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,159 +18,169 @@
 </head>
 <body>
 
-<!-- ===== Topbar ===== -->
-<header class="landing-topbar">
-  <div class="ff-container">
-    <a class="ff-brand" href="/">
-      <img class="ff-brand__logo" src="/static/img/logo.png" alt="FishFinder logo">
-      <span class="ff-brand__name">FishFinder</span>
-    </a>
-    <nav>
-      <a class="nav-link" href="#features">Features</a>
-      <a class="ff-btn ff-btn--secondary" href="/map">Open the map</a>
-    </nav>
+<!-- ============================ Topbar ============================ -->
+{% include '_topbar.html' %}
+
+<main>
+
+<!-- ============================ Hero ============================ -->
+<!-- Full-bleed bathymetry fills the entire hero; layered scrims in landing.css
+     dissolve every edge into the dark page and darken the left for legible
+     copy. The background spans the viewport; only the copy is container-bound. -->
+<section class="hero">
+  <div class="hero__bg" aria-hidden="true">
+    <img src="/static/img/hero.png" alt="">
   </div>
-</header>
-
-<!-- ===== Hero ===== -->
-<section class="section hero">
-  <div class="ff-container">
-    <span class="ff-eyebrow reveal">Bathymetry &amp; terrain analysis</span>
-    <h1 class="hero__headline reveal">Understand the ocean floor.</h1>
-    <p class="hero__sub reveal">High-resolution bathymetry and terrain analysis for anglers and divers — read seafloor structure, ledges, and drops from survey-grade depth data.</p>
-    <div class="hero__actions reveal">
-      <a class="ff-btn ff-btn--primary ff-btn--lg" href="/map">
-        Open the map
-        <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
-      </a>
-      <a class="ff-btn ff-btn--ghost" href="#features">
-        See the tools
-        <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
-      </a>
-    </div>
-
-    <div class="hero__shot reveal">
-      <div class="ff-frame">
-        <div class="shot-chrome">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="addr">fishfinder.app/map</span>
-        </div>
-        <img src="/static/img/hero.png" alt="FishFinder bathymetric map viewer showing high-resolution seafloor terrain">
+  <div class="ff-container hero__inner">
+    <div class="hero__copy">
+      <span class="ff-eyebrow reveal">Marine terrain analysis</span>
+      <h1 class="hero__headline reveal">Understand the ocean floor.</h1>
+      <p class="hero__sub reveal">FishFinder renders high-resolution bathymetry and terrain-analysis tools for anglers and divers — read seafloor structure, ledges, and drop-offs from survey-grade NOAA and USGS depth data, all in your browser.</p>
+      <div class="hero__actions reveal">
+        <a class="ff-btn ff-btn--primary ff-btn--lg" href="/map">
+          Launch Map
+          <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+        </a>
+        <a class="ff-btn ff-btn--ghost" href="#features">
+          Explore Features
+          <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </a>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ===== Stat strip ===== -->
-<div class="ff-container">
-  <div class="stats">
-    <div class="stat reveal">
-      <div class="stat__num">NOAA · USGS</div>
-      <div class="stat__lbl">Survey-grade source data</div>
+<!-- ====================== Proof points ====================== -->
+<section class="section proof" aria-label="Why FishFinder">
+  <div class="ff-container">
+
+    <div class="proof__item reveal">
+      <svg class="proof__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/>
+      </svg>
+      <div class="proof__title">Accurate data</div>
+      <div class="proof__desc">Built on NOAA and USGS bathymetric sources, served at full resolution.</div>
     </div>
-    <div class="stat reveal">
-      <div class="stat__num">6</div>
-      <div class="stat__lbl">Terrain analyses</div>
+
+    <div class="proof__item reveal">
+      <svg class="proof__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 3v18h18"/><path d="M7 15l3-4 3 2 4-6"/>
+      </svg>
+      <div class="proof__title">Powerful tools</div>
+      <div class="proof__desc">Spotfinder, 3D terrain, measurement, and structure analysis in one viewer.</div>
     </div>
-    <div class="stat reveal">
-      <div class="stat__num">3D</div>
-      <div class="stat__lbl">Terrain inspection</div>
+
+    <div class="proof__item reveal">
+      <svg class="proof__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 21s-7-4.35-7-10a7 7 0 0 1 14 0c0 5.65-7 10-7 10z"/><circle cx="12" cy="11" r="2.5"/>
+      </svg>
+      <div class="proof__title">Built for anglers and divers</div>
+      <div class="proof__desc">Find structure, inspect terrain, and plan trips before you leave the dock.</div>
     </div>
+
   </div>
-</div>
+</section>
 
-<div class="ff-divider"></div>
-
-<!-- ===== Features ===== -->
+<!-- ============================ Features ============================ -->
 <section class="section features" id="features">
   <div class="ff-container">
 
-    <!-- Feature 1: Bathymetric terrain -->
+    <!-- 01 — Bathymetric terrain -->
     <article class="feature reveal">
       <div class="feature__copy">
-        <span class="ff-label">01 — Terrain</span>
-        <h2>Read the seafloor like a topographic map.</h2>
-        <p>Full-coverage coastal depth rendered from NOAA and USGS survey data. Color relief, hillshade, and slope let you read the bottom the way a contour map reads the land.</p>
-        <div class="feature__tags">
-          <span class="ff-pill">Color relief</span>
-          <span class="ff-pill">Hillshade</span>
-          <span class="ff-pill">Slope</span>
-        </div>
+        <span class="ff-label">Bathymetry</span>
+        <h2>High-resolution terrain you can read.</h2>
+        <p>Coastal depth rendered from survey-grade NOAA and USGS data. Color relief, hillshade, slope, and roughness analyses run client-side, so you can read the bottom the way a contour map reads the land.</p>
+        <ul class="feature__points">
+          <li>Color relief with shaded hillshade overlay</li>
+          <li>Slope, roughness, and discrete depth bands</li>
+          <li>Click anywhere for the exact charted depth</li>
+        </ul>
       </div>
       <div class="feature__media">
-        <div class="ff-frame"><img src="/static/img/satellite.png" alt="Satellite basemap mode over coastal water"></div>
-      </div>
-    </article>
-
-    <!-- Feature 2: Spotfinder -->
-    <article class="feature flip reveal" id="spotfinder">
-      <div class="feature__media">
-        <div class="ff-frame"><img src="/static/img/spotfinder.png" alt="Spotfinder results ranking high-probability seafloor structure"></div>
-      </div>
-      <div class="feature__copy">
-        <span class="ff-label">02 — Spotfinder</span>
-        <h2>Find structure, then rank it.</h2>
-        <p>Spotfinder scores the seafloor by slope, rugosity, and bathymetric position index, surfacing the drops, ledges, and hard bottom worth fishing or diving as a ranked list of detections.</p>
-        <div class="feature__tags">
-          <span class="ff-pill">Slope</span>
-          <span class="ff-pill">Rugosity</span>
-          <span class="ff-pill">BPI / TRI</span>
+        <div class="ff-frame">
+          <img src="/static/img/hero.png" alt="Color-relief bathymetry showing reef ledges and hard-bottom structure in shallow water.">
         </div>
       </div>
     </article>
 
-    <!-- Feature 3: 3D -->
-    <article class="feature reveal">
-      <div class="feature__copy">
-        <span class="ff-label">03 — 3D view</span>
-        <h2>Inspect terrain in three dimensions.</h2>
-        <p>Tilt the map into 3D to inspect drop-offs, walls, and transition zones from any angle — using the same shell and inspector as the rest of the app.</p>
-        <div class="feature__tags">
-          <span class="ff-pill">Tilt &amp; orbit</span>
-          <span class="ff-pill">Walls &amp; ledges</span>
-          <span class="ff-pill">Entry planning</span>
+    <!-- 02 — Spotfinder -->
+    <article class="feature feature--flip reveal" id="spotfinder">
+      <div class="feature__media">
+        <div class="ff-frame">
+          <img src="/static/img/spotfinder.png" alt="Spotfinder detections marked over the seafloor, with ranked structure highlighted inside search rectangles.">
         </div>
       </div>
+      <div class="feature__copy">
+        <span class="ff-label">Spotfinder</span>
+        <h2>Automatic structure detection.</h2>
+        <p>Spotfinder scores a search area by slope, rugosity, and bathymetric position, then surfaces the ledges, drops, and hard bottom worth fishing or diving as a ranked list of detections you can jump to.</p>
+        <ul class="feature__points">
+          <li>Draw a search box anywhere on the map</li>
+          <li>Ranked detections by structure type</li>
+          <li>Saved runs you can revisit and compare</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- 03 — 3D terrain inspection -->
+    <article class="feature reveal">
+      <div class="feature__copy">
+        <span class="ff-label">3D terrain</span>
+        <h2>Inspect the bottom in three dimensions.</h2>
+        <p>Lift any patch of seafloor into a 3D view with depth labels and vertical exaggeration. Read walls, drop-offs, and transition zones from any angle to understand how structure actually sits on the bottom.</p>
+        <ul class="feature__points">
+          <li>Tilt and orbit with adjustable exaggeration</li>
+          <li>Depth markers anchored to the surface</li>
+          <li>Same data as the 2D map — no re-fetch</li>
+        </ul>
+      </div>
       <div class="feature__media">
-        <div class="ff-frame"><img src="/static/img/terrain3d.png" alt="3D terrain view of the seafloor showing drop-offs and ledges"></div>
+        <div class="ff-frame">
+          <img src="/static/img/terrain3d.png" alt="3D rendering of seafloor terrain with a steep wall and depth labels along the slope.">
+        </div>
+      </div>
+    </article>
+
+    <!-- 04 — Sources, measurement, saved locations -->
+    <article class="feature feature--flip reveal">
+      <div class="feature__media">
+        <div class="ff-frame">
+          <img src="/static/img/satellite.png" alt="Satellite-imagery basemap over the same coastal water, showing seafloor features through the surface.">
+        </div>
+      </div>
+      <div class="feature__copy">
+        <span class="ff-label">Sources &amp; tools</span>
+        <h2>Compare sources, measure, and save.</h2>
+        <p>Switch between bathymetric sources and satellite imagery to cross-check what you see. Measure distance across the bottom, and save the locations and runs that matter so they're ready next time.</p>
+        <ul class="feature__points">
+          <li>Multiple NOAA sources plus satellite basemaps</li>
+          <li>Distance measurement across the seafloor</li>
+          <li>Saved locations and Spotfinder runs</li>
+        </ul>
       </div>
     </article>
 
   </div>
 </section>
 
-<div class="ff-divider"></div>
-
-<!-- ===== Final CTA ===== -->
+<!-- ============================ Final CTA ============================ -->
 <section class="section final">
   <div class="ff-container reveal">
     <span class="ff-eyebrow" style="justify-content:center">Ready when you are</span>
     <h2>Scout the bottom before you go.</h2>
-    <p>High-resolution bathymetry and terrain analysis, in your browser.</p>
+    <p>High-resolution bathymetry and terrain analysis, in your browser — no install, no account.</p>
     <a class="ff-btn ff-btn--primary ff-btn--lg" href="/map">
-      Open the map
+      Launch Map
       <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
     </a>
   </div>
 </section>
 
-<!-- ===== Footer ===== -->
-<footer class="landing-footer">
-  <div class="ff-container">
-    <a class="ff-brand" href="/">
-      <img class="ff-brand__logo" src="/static/img/logo.png" alt="FishFinder logo">
-      <span class="ff-brand__name">FishFinder</span>
-    </a>
-    <div class="footer__meta">Depth data: <b>NOAA</b> · <b>USGS</b> coastal DEM</div>
-    <div class="footer__meta">© 2026 FishFinder · Dive within your limits.</div>
-  </div>
-</footer>
+</main>
 
-<div class="legal-bar">
-  <div class="ff-container">
-    © 2026 FishFinder &nbsp;·&nbsp; <a href="/terms">Terms of Service</a> &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a>
-  </div>
-</div>
+<!-- ============================ Footer ============================ -->
+{% include '_footer.html' %}
 
 <script nonce="{{ csp_nonce }}">
 // Reveal-on-scroll. Elements above the fold are revealed immediately so the

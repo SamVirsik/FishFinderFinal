@@ -1,0 +1,24 @@
+{# Shared full-bleed topbar. Caller may `{% set active = '<page>' %}` before
+   including to highlight the current nav link. The bar background and bottom
+   border span the full browser width; only the nav content is constrained to
+   the centered page container. #}
+<header class="landing-topbar">
+  <div class="ff-container">
+    <a class="ff-brand" href="/">
+      <img class="ff-brand__logo" src="/static/img/logo.png" alt="">
+      <span class="ff-brand__name">FishFinder</span>
+    </a>
+    <nav class="landing-nav" aria-label="Primary">
+      <div class="landing-nav__links">
+        <a class="nav-link{{ ' nav-link--active' if active == 'features' }}" href="/#features">Features</a>
+        <a class="nav-link{{ ' nav-link--active' if active == 'data' }}" href="/data">Data</a>
+        <a class="nav-link{{ ' nav-link--active' if active == 'pricing' }}" href="/pricing">Pricing</a>
+        <a class="nav-link{{ ' nav-link--active' if active == 'about' }}" href="/about">About</a>
+      </div>
+      <a class="ff-btn ff-btn--outline" href="/map">
+        Launch Map
+        <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+      </a>
+    </nav>
+  </div>
+</header>

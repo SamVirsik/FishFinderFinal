@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About — FishFinder</title>
+<meta name="description" content="About FishFinder — a marine terrain-analysis platform that renders survey-grade bathymetry in the browser for anglers and divers.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body class="page-about">
+
+{% set active = 'about' %}
+{% include '_topbar.html' %}
+
+<main>
+
+<section class="page-head">
+  <div class="ff-container">
+    <span class="ff-eyebrow">About</span>
+    <h1>Built to make the sea floor readable.</h1>
+    <p>FishFinder turns public depth surveys into terrain you can actually read — the way a contour map reads the land — so anglers and divers can find structure before they leave the dock.</p>
+  </div>
+</section>
+
+<section class="page-section">
+  <div class="ff-container">
+    <h2 class="section-title">Why we made it</h2>
+    <div class="prose">
+      <p>The best fishing and diving happens on structure — ledges, drop-offs, hard bottom, wrecks. That detail lives in public bathymetric surveys from NOAA and the USGS, but it's locked inside formats and tools built for hydrographers, not for someone planning a trip.</p>
+      <p>FishFinder pulls those raw depth grids and renders them in your browser with the analyses that actually reveal structure: color relief with hillshade, slope, roughness, and discrete depth bands. Nothing is pre-baked on a server — every pixel is computed from the real numbers, so the depth you click is the depth that drew the color.</p>
+      <p>It's fast, it's free to open, and it runs anywhere a browser does.</p>
+    </div>
+  </div>
+</section>
+
+<section class="page-section">
+  <div class="ff-container">
+    <h2 class="section-title">What it does well</h2>
+    <div class="stat-row">
+      <div>
+        <div class="stat__num ff-numeral">60</div>
+        <div class="stat__label">Frames per second on pan and zoom — all render math runs off the main thread.</div>
+      </div>
+      <div>
+        <div class="stat__num ff-numeral">6</div>
+        <div class="stat__label">NOAA and USGS sources to cross-check coverage.</div>
+      </div>
+      <div>
+        <div class="stat__num ff-numeral">3D</div>
+        <div class="stat__label">Terrain inspection to read walls and drop-offs from any angle.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="page-section">
+  <div class="ff-container">
+    <h2 class="section-title">A note on safety</h2>
+    <div class="prose">
+      <p>FishFinder is not for navigation. Depth values are derived from public survey data that may be incomplete or out of date — never rely on them for safe passage. Always boat and dive within your own limits and consult official charts. FishFinder is not affiliated with or endorsed by NOAA or the USGS.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section final">
+  <div class="ff-container">
+    <span class="ff-eyebrow" style="justify-content:center">Ready when you are</span>
+    <h2>Scout the bottom before you go.</h2>
+    <p>High-resolution bathymetry and terrain analysis, in your browser — no install, no account.</p>
+    <a class="ff-btn ff-btn--primary ff-btn--lg" href="/map">
+      Launch Map
+      <svg class="ff-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+    </a>
+  </div>
+</section>
+
+</main>
+
+{% include '_footer.html' %}
+
+</body>
+</html>
