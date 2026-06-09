@@ -113,11 +113,12 @@ app.config["SESSION_COOKIE_SECURE"] = True
 # actionable message instead of a bare KeyError.
 if not os.environ.get("SECRET_KEY"):
     raise RuntimeError(
-        "SECRET_KEY environment variable is not set. The app refuses to start "
-        "without it so sessions are never signed with a guessable key. "
-        "Generate one and set it before launching:\n"
-        '  PowerShell:  $env:SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"\n'
-        "  bash:        export SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')"
+        "The session signing key is missing, so the app refuses to start "
+        "(sessions must never be signed with a guessable or per-process-random "
+        "key). Set it in the environment before launching — the app reads "
+        "os.environ['SECRET_KEY']. Generate a value with Python's "
+        "secrets.token_hex(32). See the 'Running it' section of CLAUDE.md for "
+        "ready-to-paste PowerShell and bash one-liners."
     )
 app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]
 

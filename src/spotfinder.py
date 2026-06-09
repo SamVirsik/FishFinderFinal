@@ -74,8 +74,7 @@ from scipy.ndimage import (
     gaussian_filter, label, map_coordinates,
     maximum_filter, minimum_filter, uniform_filter,
 )
-from scipy.spatial import ConvexHull
-from scipy.spatial.qhull import QhullError
+from scipy.spatial import ConvexHull, QhullError
 
 from src.LayerGeneration import _build_noaa_params, _noaa_semaphore, _session
 from src.data_sources import get_source

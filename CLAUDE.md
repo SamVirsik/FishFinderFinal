@@ -379,8 +379,18 @@ re-implementing the layer-swap invariants — almost certainly wrong.
 
 ## Running it
 
+`app.py` refuses to start unless `SECRET_KEY` is set in the environment (it
+signs the Flask session cookie — no hardcoded or per-process-random fallback,
+by design). Generate one and set it before launching:
+
 ```
 pip install -r requirements.txt
+
+# PowerShell
+$env:SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"
+# bash
+export SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')
+
 python app.py     # http://localhost:8080/
 ```
 
