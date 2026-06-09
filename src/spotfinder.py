@@ -59,6 +59,7 @@ the richer renderer in `static/map.js`.
 
 import base64
 import io
+import logging
 import math
 import time
 import uuid
@@ -78,6 +79,8 @@ from scipy.spatial.qhull import QhullError
 
 from src.LayerGeneration import _build_noaa_params, _noaa_semaphore, _session
 from src.data_sources import get_source
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +105,7 @@ SPOTFINDER_SOURCES = (
 )
 
 # Hard limits.
-MAX_TOTAL_CELLS = 50_000_000
+MAX_TOTAL_CELLS = 10_000_000
 MAX_SINGLE_FETCH_DIM = 4096
 COVERAGE_THRESHOLD = 0.95
 COVERAGE_PROBE_PX = 128
@@ -523,20 +526,20 @@ def _fetch_bbox_raster(source, bbox_3857, raster_w, raster_h):
             resp = _session.get(source.url, params=params,
                                 timeout=source.timeout_s)
         except requests.RequestException as e:
-            print(f"[spotfinder] NOAA fetch failed ({source.id}): {e}")
+            logger.warning(f"[spotfinder] NOAA fetch failed ({source.id}): {e}")
             return None
     if resp.status_code != 200:
-        print(f"[spotfinder] NOAA HTTP {resp.status_code} ({source.id})")
+        logger.warning(f"[spotfinder] NOAA HTTP {resp.status_code} ({source.id})")
         return None
     if "image" not in resp.headers.get("Content-Type", ""):
-        print(f"[spotfinder] NOAA returned non-image ({source.id}): "
-              f"{resp.headers.get('Content-Type')!r}")
+        logger.warning(f"[spotfinder] NOAA returned non-image ({source.id}): "
+                       f"{resp.headers.get('Content-Type')!r}")
         return None
 
     try:
         arr = tifffile.imread(io.BytesIO(resp.content))
     except Exception as e:
-        print(f"[spotfinder] decode failed ({source.id}): {e}")
+        logger.warning(f"[spotfinder] decode failed ({source.id}): {e}")
         return None
     if arr.ndim != 2:
         return None
@@ -1969,7 +1972,6 @@ def run_spotfinder(payload):
     except Exception as e:
         # Never expose a raw stacktrace, but log it so the dev console
         # has something to chase.
-        print(f"[spotfinder] unhandled error: {e!r}")
-        import traceback; traceback.print_exc()
+        logger.exception(f"[spotfinder] unhandled error: {e!r}")
         yield {"type": "error",
                "message": f"Spotfinder failed: {e.__class__.__name__}"}

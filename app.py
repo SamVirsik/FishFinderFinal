@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import struct
+import sys
 import threading
 import time
 import uuid
@@ -78,6 +79,18 @@ _heartbeat_lock = threading.Lock()
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 flask.cli.show_server_banner = lambda *args, **kwargs: None
 
+# Application logger. Routed to stdout with a bare message format so the
+# startup banner and the spotfinder stream-guard diagnostic read exactly as
+# the previous bare-print output did. propagate=False keeps these off the root
+# handler so they aren't duplicated to stderr.
+logger = logging.getLogger("fishfinder")
+if not logger.handlers:
+    _log_handler = logging.StreamHandler(sys.stdout)
+    _log_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_log_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
 app = Flask(__name__)
 
 # Reject oversized request bodies before they're read into memory. The only
@@ -85,6 +98,28 @@ app = Flask(__name__)
 # config (search area + tuning params); 512 KB is far more than that ever
 # needs and stops a multi-megabyte POST from being buffered.
 app.config['MAX_CONTENT_LENGTH'] = 512 * 1024
+
+# Session-cookie hardening. Flask's default is already HttpOnly, but set it
+# explicitly so an XSS payload can never read the signed session cookie via
+# document.cookie, and so the safe value is pinned against a future regression.
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config["SESSION_COOKIE_SECURE"] = True
+
+# Signing key for the session cookie. Sourced strictly from the environment
+# with no hardcoded or generated fallback: a missing key must fail loud at
+# startup rather than silently signing sessions with a guessable or
+# per-process-random value. We check explicitly so the failure is an
+# actionable message instead of a bare KeyError.
+if not os.environ.get("SECRET_KEY"):
+    raise RuntimeError(
+        "SECRET_KEY environment variable is not set. The app refuses to start "
+        "without it so sessions are never signed with a guessable key. "
+        "Generate one and set it before launching:\n"
+        '  PowerShell:  $env:SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"\n'
+        "  bash:        export SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')"
+    )
+app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +243,7 @@ def _security_headers(resp):
 # already reject negatives and non-digits, so these only need upper bounds.
 _MAX_TILE_ZOOM = 24
 _MIN_RASTER_RES = 1
-_MAX_RASTER_RES = 2048
+_MAX_RASTER_RES = 512
 
 # Geographic bounds (WGS84 degrees) and the largest search box we'll accept.
 _LAT_MIN, _LAT_MAX = -90.0, 90.0
@@ -555,7 +590,7 @@ def spotfinder_run():
             # Last-resort guard: the generator itself raises an
             # error event for SpotfinderError, but a programmer error
             # in this module would still bubble through here.
-            print(f"[spotfinder] stream guard caught: {e!r}")
+            logger.error(f"[spotfinder] stream guard caught: {e!r}")
             yield json.dumps({
                 "type": "error",
                 "message": f"Spotfinder failed: {e.__class__.__name__}",
@@ -657,7 +692,7 @@ if __name__ == '__main__':
     # template/python and want auto-reload.
     if _AUTOSHUTDOWN:
         threading.Thread(target=_heartbeat_watcher, daemon=True).start()
-        print(f'auto-shutdown armed: {HEARTBEAT_TIMEOUT_S:.0f}s idle '
-              f'after {HEARTBEAT_MIN_PINGS} pings', flush=True)
-    print('FishFinder running at http://127.0.0.1:8080', flush=True)
+        logger.info(f'auto-shutdown armed: {HEARTBEAT_TIMEOUT_S:.0f}s idle '
+                    f'after {HEARTBEAT_MIN_PINGS} pings')
+    logger.info('FishFinder running at http://127.0.0.1:8080')
     app.run(host='127.0.0.1', port=8080, debug=False, threaded=True)

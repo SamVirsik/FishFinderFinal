@@ -4,9 +4,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from PIL import Image
+import logging
 import random
+import sys
 import time
 import scipy.sparse as sp
+
+# This module is an interactive CLI previewer: its messages and prompts go to
+# the user on stdout. Route a module logger to stdout with a bare message
+# format so the output reads exactly as the previous bare-print output did.
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    _log_handler = logging.StreamHandler(sys.stdout)
+    _log_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_log_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 def readData(importName):
     tif_data = tiff.imread(importName)
@@ -25,10 +38,10 @@ def GPSConvert(latitude, longitude):
     w1p, w2p, w3p = westHeading[0:windex1], westHeading[(windex1+1):windex2], westHeading[(windex2+1):]
     p11, p22 = str(round(((((float(n3p))/60) + int(n2p))/60) + int(n1p), 7)), str(round(((((float(w3p))/60) + int(w2p))/60) + int(w1p), 7) *-1)
     p33, p44 = str(int(n1p)) + "." + str(round(((float(n3p)/60)+int(n2p)), 3)), str(int(w1p)) + "." + str(round(((float(w3p)/60)+int(w2p)), 3))
-    print(p44 + ", " + p33)
+    logger.info(p44 + ", " + p33)
     wh, nh = str(int(abs(latitude))) + "°" + str(p5) + "'" + str(p7) + r'"' + "W", str(int(abs(longitude))) + "°" + str(p6) + "'" + str(p8) + r'"' + "N"
-    print(str(round(longitude, 7)) + ", " + str(round(latitude, 7)))
-    print(nh + ", " + wh)
+    logger.info(str(round(longitude, 7)) + ", " + str(round(latitude, 7)))
+    logger.info(nh + ", " + wh)
 
 def addGPS(df, bottom_left_gps, top_right_gps, number_rows, number_columns):
     
@@ -58,8 +71,8 @@ def zeroToOneFifty (df, number_rows, number_columns):
     currentRow = 0
     rowNeededToChange = rowOnePercent
     nextPercent = 1
-    print("")
-    print("--------------------------")
+    logger.info("")
+    logger.info("--------------------------")
     
     image = Image.new('RGB', (number_columns, number_rows), color = 'white')
     pixels = image.load()
@@ -91,17 +104,17 @@ def zeroToOneFifty (df, number_rows, number_columns):
         colNum = 0
             
     finalPrint = "Progress: 100%"
-    print('\r' + finalPrint)
+    logger.info('\r' + finalPrint)
     
     end_time = time.time()
     
-    print("Total Time:" + str(end_time - start_time))
+    logger.info("Total Time:" + str(end_time - start_time))
     
     return image
 
 def get_subset(data_name, x_min = 0, x_max = 1, y_min=0, y_max=1):
     start_time = time.time_ns()
-    print(0, (time.time_ns()-start_time)/1000000)
+    logger.info(0, (time.time_ns()-start_time)/1000000)
     
     #get data
     df = pd.DataFrame(tiff.imread(data_name+".tif"))
@@ -127,7 +140,7 @@ def get_subset(data_name, x_min = 0, x_max = 1, y_min=0, y_max=1):
     pixels = image.load()
     
     colorList = [(139, 69, 19), (212, 255, 1), (190, 255, 1), (166, 255, 17), (139, 255, 17), (115, 255, 49), (83, 255, 84), (53, 255, 114), (53, 255, 147), (53, 255, 199), (17, 255, 220), (0, 255, 249), (0, 245, 249), (0, 226, 249), (0, 212, 242), (0, 198, 242), (0, 182, 242), (0, 167, 242), (0, 150, 242), (0, 128, 242), (0, 110, 218), (0, 88, 218), (0, 61, 215), (0, 30, 215), (0, 0, 207), (0, 0, 187), (0, 0, 163), (0, 0, 140), (0, 0, 128), (0, 0, 108), (0, 0, 88)]
-    print(1, (time.time_ns()-start_time)/1000000)
+    logger.info(1, (time.time_ns()-start_time)/1000000)
     rowNum = 0
     colNum = 0
     for row in df.values:
@@ -151,21 +164,21 @@ def get_subset(data_name, x_min = 0, x_max = 1, y_min=0, y_max=1):
         rowNum+=1
     
     name = "SECTION_" + data_name + "_" + str(x_min) + "_" + str(x_max) + "_" + str(y_min) + "_" + str(y_max) + ".png"
-    print(2, (time.time_ns()-start_time)/1000000)
+    logger.info(2, (time.time_ns()-start_time)/1000000)
     image.save("img/"+name, save_all = True)
-    print(3, (time.time_ns()-start_time)/1000000)
+    logger.info(3, (time.time_ns()-start_time)/1000000)
     return name
 
 #GetData
 
 if __name__ == "__main__":
-    print("How would you like to access the image?")
-    print("Compute one now (c), or upload one (u) which has already been created?")
+    logger.info("How would you like to access the image?")
+    logger.info("Compute one now (c), or upload one (u) which has already been created?")
     imageSource = input()
 
     if imageSource == "c":
-        print("Please enter the file name of the data import.")
-        print("GPS data will automatically be taken from hardcoded values unless it is unknown.")
+        logger.info("Please enter the file name of the data import.")
+        logger.info("GPS data will automatically be taken from hardcoded values unless it is unknown.")
         nameImport = input()
         dfNOCOORD = readData(nameImport)
 
@@ -173,15 +186,15 @@ if __name__ == "__main__":
         tempCopy = dfNOCOORD.copy()
         
 
-        print("Please enter the GPS information manually.")
-        print("")
-        print("Please begin with the bottom left longitude. Should be roughly -81.")
+        logger.info("Please enter the GPS information manually.")
+        logger.info("")
+        logger.info("Please begin with the bottom left longitude. Should be roughly -81.")
         bllong = input()
-        print("Bottom left latitude now. Should be roughly 24.")
+        logger.info("Bottom left latitude now. Should be roughly 24.")
         bllat = input()
-        print("Top right longitude now.")
+        logger.info("Top right longitude now.")
         trlong = input()
-        print("Now top right latitude.")
+        logger.info("Now top right latitude.")
         trlat = input()
         bottom_left_gps = (float(bllong), float(bllat))
         top_right_gps = (float(trlong), float(trlat))
@@ -189,15 +202,15 @@ if __name__ == "__main__":
         
         dfCOORD = addGPS(tempCopy, bottom_left_gps, top_right_gps, nR, nC)
         del tempCopy
-        print("--------------------------")
-        print("Which analysis type would you like to use?")
-        print("")
-        print("General: g")
-        print("0 to 150, 5 foot incraments: 5")
-        print("1 foot incraments up to 28 feet: 1")
-        print("Contour map V1: c1")
-        print("Contour map V1 with general backing: c1g")
-        print("Contour map V2: c2")
+        logger.info("--------------------------")
+        logger.info("Which analysis type would you like to use?")
+        logger.info("")
+        logger.info("General: g")
+        logger.info("0 to 150, 5 foot incraments: 5")
+        logger.info("1 foot incraments up to 28 feet: 1")
+        logger.info("Contour map V1: c1")
+        logger.info("Contour map V1 with general backing: c1g")
+        logger.info("Contour map V2: c2")
         typeAnalysis = input()
 
         if typeAnalysis == "g":
@@ -211,34 +224,34 @@ if __name__ == "__main__":
         elif typeAnalysis == "c1g":
             myImage = contourMapV1General(dfNOCOORD, nR, nC)
         elif typeAnalysis == "c2":
-            print("--------------------------")
-            print("The algorithm you chose uses a rolling average.")
-            print("What would you like the diameter of the roll to be?")
-            print("You should enter an odd number, since the diameter includes the desired pixel.")
+            logger.info("--------------------------")
+            logger.info("The algorithm you chose uses a rolling average.")
+            logger.info("What would you like the diameter of the roll to be?")
+            logger.info("You should enter an odd number, since the diameter includes the desired pixel.")
             size = int(input())
             myImage = contourMapV2(dfNOCOORD, nR, nC, size)
         else:
             raise Exception("INVALID INPUT - Please Run Again")
         
-        print("--------------------------")
-        print("")
-        print("Computations are complete.")
-        print("Would you like to export the image? (yes or no)")
+        logger.info("--------------------------")
+        logger.info("")
+        logger.info("Computations are complete.")
+        logger.info("Would you like to export the image? (yes or no)")
         download = input()
         
         if download == 'yes' or download == "Yes":
             myImage.save('RecentExport.png', save_all = True)
-            print("--------------------------")
-            print("The image has been exported.")
+            logger.info("--------------------------")
+            logger.info("The image has been exported.")
         else:
-            print("--------------------------")
-            print("Ok, the image was not exported.")
-            print("")
-            print("The image is ready for manipulation.")
-            print("Continue to the next code block.")
+            logger.info("--------------------------")
+            logger.info("Ok, the image was not exported.")
+            logger.info("")
+            logger.info("The image is ready for manipulation.")
+            logger.info("Continue to the next code block.")
             
     elif imageSource == "u":
-        print("What is the name of the upload?")
+        logger.info("What is the name of the upload?")
         uploadName = input()
         myImage = Image.open(uploadName)
         
@@ -247,16 +260,16 @@ if __name__ == "__main__":
             bottom_left_gps = (corrdinates[0], corrdinates[1])
             top_right_gps = (corrdinates[2], corrdinates[3])
         elif corrdinates[4] == False:
-            print("It seems we don't have GPS data for that upload.")
-            print("Please enter the GPS information manually.")
-            print("")
-            print("Please begin with the bottom left longitude. Should be roughly -81.")
+            logger.info("It seems we don't have GPS data for that upload.")
+            logger.info("Please enter the GPS information manually.")
+            logger.info("")
+            logger.info("Please begin with the bottom left longitude. Should be roughly -81.")
             bllong = input()
-            print("Bottom left latitude now. Should be roughly 24.")
+            logger.info("Bottom left latitude now. Should be roughly 24.")
             bllat = input()
-            print("Top right longitude now.")
+            logger.info("Top right longitude now.")
             trlong = input()
-            print("Now top right latitude.")
+            logger.info("Now top right latitude.")
             trlat = input()
             bottom_left_gps = (float(bllong), float(bllat))
             top_right_gps = (float(trlong), float(trlat))
@@ -297,8 +310,8 @@ if __name__ == "__main__":
         dfCOORD = addGPS(tempCopy, bottom_left_gps, top_right_gps, nR, nC)
         del tempCopy
         
-        print("--------------------------")
-        print("Computations are complete.")
+        logger.info("--------------------------")
+        logger.info("Computations are complete.")
         
     else:
         raise Exception("INVALID INPUT - Please Run Again")

@@ -26,6 +26,7 @@ across calls — TLS handshake is the dominant cost on a cold tile, so
 reusing connections shaves ~100-200 ms off every fetch after the first.
 """
 
+import logging
 import math
 import os
 import threading
@@ -39,6 +40,8 @@ import tifffile
 from PIL import Image
 
 from src.data_sources import DataSource, get_source
+
+logger = logging.getLogger(__name__)
 
 
 # Sentinel returned by fetch_tile_raster when the caller asks for an
@@ -218,11 +221,11 @@ def _fetch_raster_bytes(source: DataSource, bbox_mercator, size_px: int):
                 # Network-level failure (timeout, conn reset) — transient.
                 if attempt < NOAA_MAX_RETRIES:
                     delay = NOAA_BACKOFF_BASE_S * (2 ** attempt)
-                    print(f"[NOAA] {source.id}: request failed ({e}); "
-                          f"retry {attempt + 1}/{NOAA_MAX_RETRIES} in {delay:.1f}s")
+                    logger.warning(f"[NOAA] {source.id}: request failed ({e}); "
+                                   f"retry {attempt + 1}/{NOAA_MAX_RETRIES} in {delay:.1f}s")
                 else:
-                    print(f"[NOAA] {source.id}: request failed after "
-                          f"{NOAA_MAX_RETRIES} retries: {e}")
+                    logger.warning(f"[NOAA] {source.id}: request failed after "
+                                   f"{NOAA_MAX_RETRIES} retries: {e}")
                     return None
                 time.sleep(delay)
                 continue
@@ -230,21 +233,21 @@ def _fetch_raster_bytes(source: DataSource, bbox_mercator, size_px: int):
         if resp.status_code == 200:
             if 'image' not in resp.headers.get('Content-Type', ''):
                 # Deterministic: a 200 HTML/JSON error page. Don't retry.
-                print(f"[NOAA] {source.id}: unexpected content-type "
-                      f"{resp.headers.get('Content-Type')!r}")
+                logger.warning(f"[NOAA] {source.id}: unexpected content-type "
+                               f"{resp.headers.get('Content-Type')!r}")
                 return None
             return resp.content
 
         if _is_transient_status(resp.status_code) and attempt < NOAA_MAX_RETRIES:
             delay = _retry_after_seconds(
                 resp, NOAA_BACKOFF_BASE_S * (2 ** attempt))
-            print(f"[NOAA] {source.id}: HTTP {resp.status_code}; "
-                  f"retry {attempt + 1}/{NOAA_MAX_RETRIES} in {delay:.1f}s")
+            logger.warning(f"[NOAA] {source.id}: HTTP {resp.status_code}; "
+                           f"retry {attempt + 1}/{NOAA_MAX_RETRIES} in {delay:.1f}s")
             time.sleep(delay)
             continue
 
         # Non-transient status, or transient but out of retries.
-        print(f"[NOAA] {source.id}: HTTP {resp.status_code}")
+        logger.warning(f"[NOAA] {source.id}: HTTP {resp.status_code}")
         return None
 
     return None
@@ -261,7 +264,7 @@ def _decode_raster(raw_bytes, expected_size: int, source: DataSource):
     try:
         arr = tifffile.imread(BytesIO(raw_bytes))
     except Exception as e:
-        print(f"[raster] decode failed: {e}")
+        logger.warning(f"[raster] decode failed: {e}")
         return None
 
     if arr.ndim != 2:
@@ -340,7 +343,7 @@ def _load_or_fetch(source: DataSource, z: int, x: int, y: int,
             if arr is not None and not np.isnan(arr).all():
                 return arr
         except OSError as e:
-            print(f"[raster] cache read failed for {cache_path}: {e}")
+            logger.warning(f"[raster] cache read failed for {cache_path}: {e}")
 
     raw = _fetch_raster_bytes(source, bbox_mercator, size_px)
     if raw is None:
@@ -358,7 +361,7 @@ def _load_or_fetch(source: DataSource, z: int, x: int, y: int,
             with open(cache_path, 'wb') as f:
                 f.write(raw)
         except OSError as e:
-            print(f"[raster] cache write failed for {cache_path}: {e}")
+            logger.warning(f"[raster] cache write failed for {cache_path}: {e}")
 
     return arr
 

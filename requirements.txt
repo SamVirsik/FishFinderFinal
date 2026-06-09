@@ -6,4 +6,4 @@ numpy>=2.2.1
 matplotlib>=3.10.0
 pillow>=11.1.0
 scipy>=1.15.0
-requests>=2.32.3
+requests>=2.32.4
