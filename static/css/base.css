@@ -1,0 +1,80 @@
+/* ===========================================================================
+   FishFinder — Base / Reset
+   ---------------------------------------------------------------------------
+   Element-level defaults shared by every page. Consumes tokens.css.
+   Keep this thin: anything visual and reusable belongs in components.css,
+   anything page-specific belongs in that page's stylesheet.
+   =========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--ff-bg);
+  color: var(--ff-text);
+  font-family: var(--ff-font-sans);
+  font-size: var(--ff-text-base);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Numerals that should stay aligned (coordinates, depths, distance,
+   resolution, stats) — tabular monospaced figures. */
+.ff-numeral {
+  font-family: var(--ff-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* A consistent keyboard focus treatment for every interactive element. */
+:focus-visible {
+  outline: 2px solid var(--ff-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--ff-radius-sm);
+}
+
+/* Honor reduced-motion globally; pages may add finer rules. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

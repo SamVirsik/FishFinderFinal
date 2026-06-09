@@ -1,0 +1,221 @@
+FishFinder “Deep Ocean” UI Direction
+
+
+
+FishFinder should feel like a modern professional marine-analysis platform: precise, calm, technical, and trustworthy. The interface should resemble a high-end mapping or scientific tool—not a gaming dashboard, outdoor lifestyle site, or futuristic AI product.
+
+
+
+Core visual system
+
+
+
+Use one strict palette across both the landing page and map application:
+
+
+
+Near-black navy for the main background
+
+Slightly lighter navy for panels and controls
+
+Blue-gray for borders and secondary surfaces
+
+Cool off-white for primary text
+
+Muted gray-blue for labels and metadata
+
+One cyan accent for active states, primary actions, focus, and selection
+
+
+
+Keep the interface mostly neutral. The bathymetric data should provide most of the visual color. Cyan should mean something—active, selected, or actionable—not be used everywhere decoratively.
+
+
+
+Typography
+
+
+
+Replace the angular sci-fi font with a clean, modern sans-serif.
+
+
+
+Use:
+
+
+
+Large, direct marketing headlines
+
+Clear section headings
+
+Compact interface labels
+
+Tabular or monospaced numerals for coordinates, depths, distance, and resolution
+
+Sentence case for most text
+
+Uppercase only for small structural labels
+
+
+
+The typography should feel analytical and readable rather than stylized.
+
+
+
+Application layout
+
+
+
+Use a consistent four-part structure:
+
+
+
+Top bar — logo, location/coordinate search, help, account
+
+Left tool rail — Explore, Spotfinder, 3D, Measure, Saved
+
+Main map canvas — occupies most of the screen
+
+Right inspector — settings for the currently active tool
+
+
+
+The left rail answers, “What mode am I in?”
+
+The right panel answers, “How is this mode configured?”
+
+
+
+Avoid showing every setting at once. Use contextual panels and expandable advanced sections.
+
+
+
+Map-first design
+
+
+
+The map is the product’s main content and should dominate the screen.
+
+
+
+Use:
+
+
+
+Narrower, collapsible panels
+
+Compact floating controls
+
+Clear legends and coordinate readouts
+
+Intentional states for loading, missing data, no coverage, and failed tiles
+
+Distinct treatments for selected points, measurements, and Spotfinder results
+
+
+
+The interface should frame the terrain rather than compete with it.
+
+
+
+Components
+
+
+
+All controls should follow one reusable system:
+
+
+
+Buttons
+
+Dropdowns
+
+Sliders
+
+Range sliders
+
+Toggles
+
+Tooltips
+
+Panels
+
+Dialogs
+
+Status messages
+
+Search fields
+
+Result rows
+
+Saved-location items
+
+
+
+Each component should have consistent default, hover, focus, active, disabled, loading, and error states.
+
+
+
+Use moderate corner rounding, thin borders, minimal shadows, and almost no glow. Pills should be reserved for tags, compact filters, or statuses—not used as the default shape for everything.
+
+
+
+Spotfinder and 3D
+
+
+
+Spotfinder should feel like an analytical workflow:
+
+
+
+Select an area
+
+Configure the analysis
+
+Run it
+
+Review ranked detections
+
+Save useful locations
+
+
+
+Results should connect a compact result list with clearly numbered map markers.
+
+
+
+The 3D mode should reuse the same shell and inspector system rather than looking like a separate application.
+
+Landing page
+
+The landing page should be a spacious version of the same design system.
+
+Use:
+
+The same palette, typography, logo, and buttons
+
+A direct value proposition
+
+Large real bathymetric imagery
+
+A few concise capability statements
+
+Real product screenshots
+
+Minimal marketing language
+
+A suitable tone is:
+
+Understand the ocean floor.
+
+High-resolution bathymetry and terrain analysis for anglers and divers.
+
+Avoid exaggerated phrases such as “revolutionary,” “unlock the hidden world,” or “next-generation marine intelligence.”
+
+Guiding principle
+
+Every design choice should support one idea:
+
+FishFinder is a professional marine terrain instrument made approachable through modern product design.
+
+It should feel advanced because it organizes complex data clearly—not because it uses neon, dramatic fonts, or excessive visual effects.

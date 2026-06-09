@@ -1,0 +1,286 @@
+/* ===========================================================================
+   FishFinder — Landing page
+   ---------------------------------------------------------------------------
+   Page-specific layout for the marketing landing page. A spacious version of
+   the same design system used by the app: same palette, typography, logo, and
+   buttons (tokens.css + components.css). No new colors are introduced here.
+   =========================================================================== */
+
+/* --- Topbar --------------------------------------------------------------- */
+.landing-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  height: var(--ff-topbar-h);
+  display: flex;
+  align-items: center;
+  background: rgba(7, 11, 18, 0.82);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--ff-border);
+}
+
+.landing-topbar .ff-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.landing-topbar nav {
+  display: flex;
+  align-items: center;
+  gap: var(--ff-space-6);
+}
+
+.landing-topbar nav a.nav-link {
+  font-size: var(--ff-text-sm);
+  font-weight: var(--ff-weight-medium);
+  color: var(--ff-muted);
+  transition: color var(--ff-transition);
+}
+
+.landing-topbar nav a.nav-link:hover {
+  color: var(--ff-text);
+}
+
+@media (max-width: 640px) {
+  .landing-topbar nav .nav-link {
+    display: none;
+  }
+}
+
+/* --- Section rhythm ------------------------------------------------------- */
+.section {
+  position: relative;
+}
+
+/* --- Hero ----------------------------------------------------------------- */
+.hero {
+  padding-block: var(--ff-space-9) var(--ff-space-7);
+  text-align: center;
+}
+
+.hero__headline {
+  margin: var(--ff-space-5) auto var(--ff-space-4);
+  max-width: 16ch;
+  font-size: var(--ff-h1);
+  font-weight: var(--ff-weight-bold);
+  line-height: 1.05;
+  letter-spacing: var(--ff-tracking-tight);
+}
+
+.hero__sub {
+  margin: 0 auto var(--ff-space-6);
+  max-width: 56ch;
+  font-size: var(--ff-text-lg);
+  color: var(--ff-muted);
+  line-height: 1.55;
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ff-space-4);
+  justify-content: center;
+  align-items: center;
+}
+
+.hero__shot {
+  margin-top: var(--ff-space-8);
+}
+
+.hero__shot .ff-frame {
+  max-width: 1040px;
+  margin-inline: auto;
+}
+
+/* Restrained window chrome for the product screenshot. */
+.shot-chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--ff-space-2);
+  padding: var(--ff-space-3) var(--ff-space-4);
+  background: var(--ff-surface);
+  border-bottom: 1px solid var(--ff-border);
+}
+
+.shot-chrome .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--ff-radius-pill);
+  background: var(--ff-border-strong);
+}
+
+.shot-chrome .addr {
+  margin-left: var(--ff-space-3);
+  font-family: var(--ff-font-mono);
+  font-size: var(--ff-text-xs);
+  color: var(--ff-faint);
+  letter-spacing: 0.02em;
+}
+
+/* --- Stat strip ----------------------------------------------------------- */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--ff-space-8);
+  padding-block: var(--ff-space-7);
+  text-align: center;
+}
+
+.stat__num {
+  font-family: var(--ff-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.75rem;
+  font-weight: var(--ff-weight-semibold);
+  color: var(--ff-text);
+  line-height: 1;
+}
+
+.stat__lbl {
+  margin-top: var(--ff-space-2);
+  font-size: var(--ff-text-xs);
+  letter-spacing: var(--ff-tracking-label);
+  text-transform: uppercase;
+  color: var(--ff-faint);
+}
+
+/* --- Features ------------------------------------------------------------- */
+.features {
+  padding-block: var(--ff-space-5);
+}
+
+.feature {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ff-space-8);
+  align-items: center;
+  padding-block: var(--ff-space-8);
+}
+
+.feature.flip .feature__media {
+  order: 2;
+}
+
+.feature.flip .feature__copy {
+  order: 1;
+}
+
+.feature__copy h2 {
+  margin: var(--ff-space-3) 0 var(--ff-space-4);
+  font-size: var(--ff-h2);
+  font-weight: var(--ff-weight-bold);
+  line-height: 1.1;
+  letter-spacing: var(--ff-tracking-tight);
+}
+
+.feature__copy p {
+  max-width: 46ch;
+  color: var(--ff-muted);
+  font-size: var(--ff-text-lg);
+}
+
+.feature__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ff-space-2);
+  margin-top: var(--ff-space-5);
+}
+
+.feature__media {
+  position: relative;
+}
+
+@media (max-width: 860px) {
+  .feature {
+    grid-template-columns: 1fr;
+    gap: var(--ff-space-5);
+    padding-block: var(--ff-space-6);
+  }
+  .feature.flip .feature__media,
+  .feature.flip .feature__copy {
+    order: 0;
+  }
+}
+
+/* --- Final CTA ------------------------------------------------------------ */
+.final {
+  padding-block: var(--ff-space-9);
+  text-align: center;
+}
+
+.final h2 {
+  margin: var(--ff-space-4) auto var(--ff-space-4);
+  max-width: 20ch;
+  font-size: var(--ff-h2);
+  font-weight: var(--ff-weight-bold);
+  line-height: 1.08;
+  letter-spacing: var(--ff-tracking-tight);
+}
+
+.final p {
+  margin-bottom: var(--ff-space-6);
+  color: var(--ff-muted);
+  font-size: var(--ff-text-lg);
+}
+
+/* --- Footer --------------------------------------------------------------- */
+.landing-footer {
+  border-top: 1px solid var(--ff-border);
+  padding-block: var(--ff-space-6);
+}
+
+.landing-footer .ff-container {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ff-space-4);
+}
+
+.landing-footer .footer__meta {
+  font-size: var(--ff-text-sm);
+  color: var(--ff-faint);
+}
+
+.landing-footer .footer__meta b {
+  color: var(--ff-muted);
+  font-weight: var(--ff-weight-medium);
+}
+
+.legal-bar {
+  border-top: 1px solid var(--ff-border);
+  padding-block: var(--ff-space-5);
+  text-align: center;
+  font-size: var(--ff-text-sm);
+  color: var(--ff-faint);
+}
+
+.legal-bar a {
+  color: var(--ff-muted);
+  transition: color var(--ff-transition);
+}
+
+.legal-bar a:hover {
+  color: var(--ff-accent);
+}
+
+/* --- Reveal-on-scroll (subtle, reduced-motion safe) ----------------------- */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s var(--ff-ease), transform 0.6s var(--ff-ease);
+}
+
+.reveal.in {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}

@@ -1,0 +1,96 @@
+/* ===========================================================================
+   FishFinder — Design Tokens ("Deep Ocean")
+   ---------------------------------------------------------------------------
+   The single source of truth for color, type, spacing, radius, and elevation
+   across the FishFinder front-end. Every component and page should consume
+   these variables rather than hard-coding values, so the system stays
+   consistent and future passes extend it instead of adding one-off CSS.
+
+   Naming conventions
+   ------------------
+   • All tokens are namespaced `--ff-*`.
+   • Components are namespaced `.ff-*` (see components.css).
+   • Page-specific layout lives in its own file (e.g. landing.css) and still
+     consumes these tokens — never invents new colors.
+
+   Palette intent (from UI_rework "Deep Ocean")
+   --------------------------------------------
+   The interface stays mostly neutral; the bathymetric data provides the color.
+   Cyan is reserved for meaning — active, selected, focused, actionable — and is
+   never used decoratively.
+   =========================================================================== */
+
+:root {
+  /* --- Surfaces (near-black navy → blue-gray) --- */
+  --ff-bg:            #070b12;  /* near-black navy — main background           */
+  --ff-bg-raised:     #0d1623;  /* slightly lighter navy — panels             */
+  --ff-surface:       #122031;  /* controls / secondary surfaces              */
+  --ff-surface-hover: #17283c;  /* control hover                              */
+
+  /* --- Lines & borders (blue-gray) --- */
+  --ff-border:        rgba(120, 150, 185, 0.16);
+  --ff-border-strong: rgba(120, 150, 185, 0.28);
+
+  /* --- Text (cool off-white → muted gray-blue) --- */
+  --ff-text:          #e6edf5;  /* primary text                               */
+  --ff-muted:         #8a9bb0;  /* labels & metadata                          */
+  --ff-faint:         #5a6b80;  /* de-emphasized / structural labels          */
+
+  /* --- Accent (one cyan, used only for meaning) --- */
+  --ff-accent:        #34cfe6;
+  --ff-accent-hover:  #5cdcef;
+  --ff-accent-press:  #21b6cc;
+  --ff-on-accent:     #03171c;  /* text/icon on a filled cyan surface         */
+  --ff-accent-soft:   rgba(52, 207, 230, 0.10); /* tint for active states     */
+  --ff-focus-ring:    rgba(52, 207, 230, 0.55); /* keyboard focus outline     */
+
+  /* --- Typography --- */
+  --ff-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ff-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+
+  /* Type scale (rem-based, 16px root). Marketing headlines fluidly scale. */
+  --ff-text-xs:   0.75rem;   /* 12px — small structural labels                */
+  --ff-text-sm:   0.875rem;  /* 14px — compact UI labels                      */
+  --ff-text-base: 1rem;      /* 16px — body                                   */
+  --ff-text-lg:   1.1875rem; /* 19px — lead paragraph                         */
+  --ff-text-xl:   1.5rem;    /* 24px — small headings                         */
+  --ff-h2:        clamp(1.75rem, 3.4vw, 2.5rem);
+  --ff-h1:        clamp(2.5rem, 5.2vw, 3.75rem);
+
+  --ff-weight-regular: 400;
+  --ff-weight-medium:  500;
+  --ff-weight-semibold:600;
+  --ff-weight-bold:    700;
+
+  --ff-tracking-tight: -0.015em; /* large headlines                          */
+  --ff-tracking-label:  0.14em;  /* uppercase structural labels              */
+
+  /* --- Spacing scale (4px base) --- */
+  --ff-space-1:  0.25rem;
+  --ff-space-2:  0.5rem;
+  --ff-space-3:  0.75rem;
+  --ff-space-4:  1rem;
+  --ff-space-5:  1.5rem;
+  --ff-space-6:  2rem;
+  --ff-space-7:  3rem;
+  --ff-space-8:  4rem;
+  --ff-space-9:  6rem;
+
+  /* --- Radius (moderate rounding; pills reserved for tags/status) --- */
+  --ff-radius-sm:  6px;
+  --ff-radius:     8px;
+  --ff-radius-lg:  12px;
+  --ff-radius-pill: 999px;
+
+  /* --- Elevation (minimal shadow, almost no glow) --- */
+  --ff-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --ff-shadow:    0 12px 36px rgba(0, 0, 0, 0.45);
+
+  /* --- Layout --- */
+  --ff-maxw:        1180px;
+  --ff-topbar-h:    64px;
+
+  /* --- Motion --- */
+  --ff-ease:        cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ff-transition:  0.18s var(--ff-ease);
+}

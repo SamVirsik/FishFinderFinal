@@ -1,0 +1,216 @@
+/* ===========================================================================
+   FishFinder — Components
+   ---------------------------------------------------------------------------
+   Reusable, page-agnostic building blocks. Every control follows one system
+   with consistent default / hover / focus / active / disabled states.
+   Namespaced `.ff-*`. Consumes tokens.css.
+   =========================================================================== */
+
+/* --- Layout container ----------------------------------------------------- */
+.ff-container {
+  width: 100%;
+  max-width: var(--ff-maxw);
+  margin: 0 auto;
+  padding-inline: var(--ff-space-6);
+}
+
+@media (max-width: 600px) {
+  .ff-container {
+    padding-inline: var(--ff-space-4);
+  }
+}
+
+/* --- Structural labels (uppercase, small) --------------------------------- */
+.ff-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ff-space-3);
+  font-size: var(--ff-text-xs);
+  font-weight: var(--ff-weight-semibold);
+  letter-spacing: var(--ff-tracking-label);
+  text-transform: uppercase;
+  color: var(--ff-accent);
+}
+
+.ff-eyebrow::before {
+  content: "";
+  width: 24px;
+  height: 1px;
+  background: var(--ff-accent);
+  opacity: 0.7;
+}
+
+.ff-label {
+  font-size: var(--ff-text-xs);
+  font-weight: var(--ff-weight-semibold);
+  letter-spacing: var(--ff-tracking-label);
+  text-transform: uppercase;
+  color: var(--ff-faint);
+}
+
+/* --- Buttons -------------------------------------------------------------- */
+.ff-btn {
+  --_pad-y: 0.75rem;
+  --_pad-x: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ff-space-2);
+  padding: var(--_pad-y) var(--_pad-x);
+  border: 1px solid transparent;
+  border-radius: var(--ff-radius);
+  font-size: var(--ff-text-sm);
+  font-weight: var(--ff-weight-semibold);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--ff-transition), border-color var(--ff-transition),
+              color var(--ff-transition), transform var(--ff-transition);
+}
+
+.ff-btn:active {
+  transform: translateY(1px);
+}
+
+.ff-btn:disabled,
+.ff-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.ff-btn .ff-btn__icon {
+  width: 1.1em;
+  height: 1.1em;
+  transition: transform var(--ff-transition);
+}
+
+/* Primary — the one cyan call to action. */
+.ff-btn--primary {
+  background: var(--ff-accent);
+  color: var(--ff-on-accent);
+  border-color: var(--ff-accent);
+}
+
+.ff-btn--primary:hover {
+  background: var(--ff-accent-hover);
+  border-color: var(--ff-accent-hover);
+}
+
+.ff-btn--primary:active {
+  background: var(--ff-accent-press);
+  border-color: var(--ff-accent-press);
+}
+
+.ff-btn--primary:hover .ff-btn__icon {
+  transform: translateX(3px);
+}
+
+/* Secondary — neutral outline. */
+.ff-btn--secondary {
+  background: var(--ff-surface);
+  color: var(--ff-text);
+  border-color: var(--ff-border-strong);
+}
+
+.ff-btn--secondary:hover {
+  background: var(--ff-surface-hover);
+  border-color: var(--ff-accent);
+  color: var(--ff-accent);
+}
+
+/* Ghost — text-only, lowest emphasis. */
+.ff-btn--ghost {
+  background: transparent;
+  color: var(--ff-muted);
+  border-color: transparent;
+}
+
+.ff-btn--ghost:hover {
+  color: var(--ff-text);
+}
+
+.ff-btn--ghost:hover .ff-btn__icon {
+  transform: translateY(2px);
+}
+
+/* Size modifier for the dominant marketing CTA. */
+.ff-btn--lg {
+  --_pad-y: 1rem;
+  --_pad-x: 2rem;
+  font-size: var(--ff-text-base);
+  border-radius: var(--ff-radius-lg);
+}
+
+/* --- Pills / tags (reserved for tags, filters, statuses) ------------------ */
+.ff-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ff-space-2);
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-pill);
+  background: var(--ff-surface);
+  font-size: var(--ff-text-xs);
+  font-weight: var(--ff-weight-medium);
+  letter-spacing: 0.02em;
+  color: var(--ff-muted);
+}
+
+.ff-pill--accent {
+  border-color: var(--ff-border-strong);
+  background: var(--ff-accent-soft);
+  color: var(--ff-accent);
+}
+
+/* --- Panel / card --------------------------------------------------------- */
+.ff-panel {
+  background: var(--ff-bg-raised);
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-lg);
+  box-shadow: var(--ff-shadow-sm);
+}
+
+/* --- Framed media (real product screenshots / imagery) -------------------- */
+.ff-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius-lg);
+  background: var(--ff-bg-raised);
+  box-shadow: var(--ff-shadow);
+}
+
+.ff-frame img {
+  width: 100%;
+  height: auto;
+}
+
+/* --- Hairline divider ----------------------------------------------------- */
+.ff-divider {
+  height: 1px;
+  max-width: var(--ff-maxw);
+  margin-inline: auto;
+  background: linear-gradient(90deg, transparent, var(--ff-border) 18%,
+              var(--ff-border) 82%, transparent);
+}
+
+/* --- Brand lockup --------------------------------------------------------- */
+.ff-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ff-space-3);
+  color: var(--ff-text);
+}
+
+.ff-brand__logo {
+  height: 34px;
+  width: auto;
+  object-fit: contain;
+}
+
+.ff-brand__name {
+  font-size: var(--ff-text-xl);
+  font-weight: var(--ff-weight-bold);
+  letter-spacing: -0.01em;
+}
