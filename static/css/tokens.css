@@ -87,7 +87,10 @@
   --ff-shadow:    0 12px 36px rgba(0, 0, 0, 0.45);
 
   /* --- Layout --- */
-  --ff-maxw:        1180px;
+  /* Content width. A viewport-relative cap so page content fills ~90% of the
+     window across all pages (was a fixed 1180px, which read as ~70% on a
+     typical laptop). Consumed by .ff-container and .ff-divider. */
+  --ff-maxw:        90%;
   --ff-topbar-h:    64px;
 
   /* --- Motion --- */

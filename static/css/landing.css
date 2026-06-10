@@ -19,8 +19,8 @@
    5. Final CTA   — centered, spacious
    6. Footer      — brand, source acknowledgment, legal + safety disclaimer
 
-   Shared sub-pages (Data / Pricing / About) reuse the topbar/footer here plus
-   the generic page-* / data-* / price-* blocks at the bottom of this file.
+   The About sub-page reuses the topbar/footer here plus the generic page-*
+   blocks at the bottom of this file.
    =========================================================================== */
 
 /* --- Topbar --------------------------------------------------------------- */

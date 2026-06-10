@@ -29,7 +29,7 @@
      copy. The background spans the viewport; only the copy is container-bound. -->
 <section class="hero">
   <div class="hero__bg" aria-hidden="true">
-    <img src="/static/img/hero.png" alt="">
+    <img src="/static/img/hero-bg.png" alt="">
   </div>
   <div class="ff-container hero__inner">
     <div class="hero__copy">
@@ -186,17 +186,26 @@
 // Reveal-on-scroll. Elements above the fold are revealed immediately so the
 // hero never sits blank; the rest fade in as they enter the viewport.
 (function () {
-  var reveals = document.querySelectorAll('.reveal');
+  var reveals = Array.prototype.slice.call(document.querySelectorAll('.reveal'));
+  function show(el) { el.classList.add('in'); }
   if (!('IntersectionObserver' in window)) {
-    reveals.forEach(function (el) { el.classList.add('in'); });
+    reveals.forEach(show);
     return;
   }
   var io = new IntersectionObserver(function (entries) {
     entries.forEach(function (e) {
-      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      if (e.isIntersecting) { show(e.target); io.unobserve(e.target); }
     });
   }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
-  reveals.forEach(function (el) { io.observe(el); });
+  // Reveal anything already within the first viewport immediately (hero copy
+  // AND the proof cards just below it), so above-the-fold content never sits
+  // blank waiting on a scroll. The IntersectionObserver's threshold/rootMargin
+  // could otherwise leave partially-visible cards stuck at opacity:0 on load.
+  // Everything further down still fades in on scroll.
+  reveals.forEach(function (el) {
+    if (el.getBoundingClientRect().top < window.innerHeight) { show(el); }
+    else { io.observe(el); }
+  });
 })();
 </script>
 
