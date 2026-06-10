@@ -552,6 +552,63 @@
   margin-bottom: 0;
 }
 
+/* About — founder. Headshot on one side, name + bio on the other, mirroring
+   the landing-page feature split but with a rounded portrait. Overrides the
+   centered .page-about section so the copy reads left-aligned. */
+.founder {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--ff-space-7);
+  align-items: center;
+  max-width: 52rem;
+  margin-inline: auto;
+  text-align: left;
+}
+
+.founder__photo {
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 1px solid var(--ff-border);
+  background: var(--ff-bg-raised);
+  box-shadow: var(--ff-shadow);
+}
+
+.founder__photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.founder__name {
+  margin: 0 0 var(--ff-space-3);
+  font-size: var(--ff-text-xl);
+  font-weight: var(--ff-weight-bold);
+  letter-spacing: var(--ff-tracking-tight);
+}
+
+.founder__copy p {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--ff-muted);
+  font-size: var(--ff-text-lg);
+  line-height: 1.7;
+}
+
+@media (max-width: 880px) {
+  .founder {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+    gap: var(--ff-space-5);
+  }
+  .founder__copy p {
+    margin-inline: auto;
+  }
+}
+
 /* Stat row (About / Data). */
 .stat-row {
   display: grid;
