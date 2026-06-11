@@ -17,6 +17,28 @@
 (function () {
     const M_TO_FT = 3.28084;
 
+    // ─── Tuning constants (easy to adjust) ──────────────────────────────
+    // texture-relief
+    const TEXTURE_VERT_EXAG = 5;     // fixed hillshade exaggeration
+    const TEXTURE_K         = 0.6;   // detail-modulation strength
+    // structure (curvature)
+    const STRUCT_VERT_EXAG     = 5;     // base hillshade exaggeration
+    const STRUCT_CURV_AMP      = 2.0;   // m — curvature that saturates the ramp
+    const STRUCT_BASE_CONTRAST = 0.7;   // base hillshade contrast under colour
+    const STRUCT_ALPHA         = 0.85;  // max curvature-colour opacity
+    const STRUCT_CONCAVE = [40, 110, 215];  // blue — holes/channels (L>0)
+    const STRUCT_CONVEX  = [210, 70, 50];   // red  — humps/ledges  (L<0)
+    // spot-score
+    const SPOT_FEATURE_M     = 40;   // fixed roughness feature scale (m)
+    const SPOT_TOL_FT        = 12;   // depth tolerance around target (ft)
+    const SPOT_R_WEIGHT      = 0.6;  // roughness weight in score
+    const SPOT_S_WEIGHT      = 0.4;  // slope weight in score
+    const SPOT_SLOPE_MAX_DEG = 45;   // slope that maps to S=1
+    // depth-contours
+    const CONTOUR_FALLBACK_MAXFT = 300;          // when a tile has no water
+    const CONTOUR_LINE = [20, 30, 40];           // dark contour-line colour
+    const CONTOUR_MIX  = 0.7;                     // line/fill blend toward line
+
 
     // ─── Reusable scratch buffers ───────────────────────────────────────
     //
@@ -79,18 +101,6 @@
     LAND_DEPTH_PALETTE[0] = 139; LAND_DEPTH_PALETTE[1] = 69;
     LAND_DEPTH_PALETTE[2] = 19;  LAND_DEPTH_PALETTE[3] = 255;
 
-    // Slope: cool green → yellow → red → purple as steepness rises.
-    const SLOPE_PALETTE = new Uint8Array([
-        220, 255, 220, 255,  184, 255, 184, 255,
-        140, 255, 140, 255,  100, 255, 100, 255,
-        255, 255, 100, 255,  255, 230,  50, 255,
-        255, 200,   0, 255,  255, 160,   0, 255,
-        255, 120,   0, 255,  255,  80,   0, 255,
-        255,  40,   0, 255,  220,   0, 120, 255,
-        160,   0, 180, 255,
-    ]);
-    const SLOPE_PALETTE_LEN = SLOPE_PALETTE.length / 4;
-
     // Viridis colour-map approximation (Kenneth Moreland polynomial fit).
     // Visually indistinguishable from matplotlib's viridis at PNG-compressed
     // tile sizes; saves embedding a 256-entry table.
@@ -117,6 +127,38 @@
         }
         return lut;
     })();
+
+    // Inferno colour-map approximation (Mikhailov 6th-order polynomial fit).
+    // Used by spot-score: dark/purple = low, bright yellow = high.
+    function inferno(t) {
+        if (t < 0) t = 0; else if (t > 1) t = 1;
+        const r = -0.000219 + t*(0.106513 + t*(11.602493 + t*(-41.703996 + t*(77.162936 + t*(-71.319428 + t*25.131126)))));
+        const g =  0.001651 + t*(0.563956 + t*(-3.972854 + t*( 17.436399 + t*(-33.402359 + t*( 32.626064 + t*-12.242669)))));
+        const b = -0.019481 + t*(3.932712 + t*(-15.942394 + t*( 44.354145 + t*(-81.807309 + t*( 73.209520 + t*-23.070325)))));
+        return [
+            Math.max(0, Math.min(255, (r * 255) | 0)),
+            Math.max(0, Math.min(255, (g * 255) | 0)),
+            Math.max(0, Math.min(255, (b * 255) | 0)),
+        ];
+    }
+
+    const INFERNO_LUT = (() => {
+        const lut = new Uint8Array(256 * 3);
+        for (let i = 0; i < 256; i++) {
+            const [r, g, b] = inferno(i / 255);
+            lut[i*3]     = r;
+            lut[i*3 + 1] = g;
+            lut[i*3 + 2] = b;
+        }
+        return lut;
+    })();
+
+    // GLSL-style smoothstep: 0 below e0, 1 above e1, Hermite ramp between.
+    function smoothstep(e0, e1, x) {
+        let t = (x - e0) / (e1 - e0);
+        if (t < 0) t = 0; else if (t > 1) t = 1;
+        return t * t * (3 - 2 * t);
+    }
 
 
     // ─── Numerical helpers ──────────────────────────────────────────────
@@ -296,126 +338,157 @@
         }
     }
 
-    function depthSmooth(elev, nodata, w, h, cellsize, param, out) {
-        const max_ft = Math.max(10.0, param);
-        const inv_max_ft = 1.0 / max_ft;
+    // texture-relief — detail-enhanced shaded relief. The hillshade carries
+    // the macro form; a high-pass residual (depth minus its blurred self at
+    // the chosen feature scale) modulates the luminance so wrecks, ledges
+    // and rubble pop without losing the overall shape. Warm-grey tint.
+    function textureRelief(elev, nodata, w, h, cellsize, param, out) {
+        const featureScale = Math.max(5.0, param);
+        const sigma = Math.max(0.5, featureScale / cellsize);
+        const bg = gaussianBlur(elev, w, h, sigma);                 // 'bb'
+        const hs = hillshade(elev, w, h, cellsize, TEXTURE_VERT_EXAG); // 'hsOut'
+        const invNorm = 1.0 / Math.max(0.05 * featureScale, 1e-3);
         for (let i = 0; i < elev.length; i++) {
-            const e = elev[i];
+            let Dn = (elev[i] - bg[i]) * invNorm;
+            if (Dn < -1) Dn = -1; else if (Dn > 1) Dn = 1;
+            let lum = hs[i] * (1 + TEXTURE_K * Dn);
+            if (lum < 0) lum = 0; else if (lum > 1) lum = 1;
+            const v = lum * 255;
             const di = i * 4;
-            if (e >= 0) {
-                out[di] = 0; out[di+1] = 0; out[di+2] = 0; out[di+3] = 0;
-            } else {
-                const depth_ft = -e * M_TO_FT;
-                let t = depth_ft * inv_max_ft;
-                if (t < 0) t = 0; else if (t > 1) t = 1;
-                const li = ((t * 255) | 0) * 3;
-                out[di]     = VIRIDIS_LUT[li];
-                out[di + 1] = VIRIDIS_LUT[li + 1];
-                out[di + 2] = VIRIDIS_LUT[li + 2];
+            out[di]     = v;
+            out[di + 1] = v * 0.97;
+            out[di + 2] = v * 0.92;
+            out[di + 3] = 255;
+        }
+    }
+
+    // structure — diverging concave/convex (curvature) map over a faint
+    // hillshade. Blue = concave (holes, channels), red = convex (humps,
+    // ledges). Flat ground stays near-transparent so the relief reads
+    // through. Replaces the old slope view.
+    function structure(elev, nodata, w, h, cellsize, param, out) {
+        const featureScale = Math.max(5.0, param);
+        const sigma = Math.max(0.5, featureScale / cellsize);
+        const zb = gaussianBlur(elev, w, h, sigma);                 // 'bb'
+        const hs = hillshade(elev, w, h, cellsize, STRUCT_VERT_EXAG); // 'hsOut'
+        const invc2 = 1.0 / (cellsize * cellsize);
+        const ampScale = (featureScale * featureScale) / STRUCT_CURV_AMP;
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const i  = y * w + x;
+                const xl = x > 0     ? i - 1 : i;
+                const xr = x < w - 1 ? i + 1 : i;
+                const yu = y > 0     ? i - w : i;
+                const yd = y < h - 1 ? i + w : i;
+                // Laplacian of elevation (+up). Concave (valley) → positive.
+                const L = (zb[yu] + zb[yd] + zb[xl] + zb[xr] - 4 * zb[i]) * invc2;
+                let t = L * ampScale;
+                if (t < -1) t = -1; else if (t > 1) t = 1;
+                const baseGrey = hs[i] * STRUCT_BASE_CONTRAST * 255;
+                const a = Math.abs(t) * STRUCT_ALPHA;
+                const col = t >= 0 ? STRUCT_CONCAVE : STRUCT_CONVEX;
+                const di = i * 4;
+                out[di]     = col[0] * a + baseGrey * (1 - a);
+                out[di + 1] = col[1] * a + baseGrey * (1 - a);
+                out[di + 2] = col[2] * a + baseGrey * (1 - a);
                 out[di + 3] = 255;
             }
         }
     }
 
-    // Compute the depth-band index grid (used by depthBands). Slot 0
-    // reserved for land/transparent.
-    function depthBandIndex(elev, w, h, band_ft) {
-        const idx = _i32('idx', w * h);
-        const inv_band = 1.0 / Math.max(band_ft, 1e-3);
+    // spot-score — the headline fusion. Roughness + slope, gated by a
+    // Gaussian preference for a reachable target depth, painted in inferno.
+    // Low scores fade to transparent so the basemap reads through; bright
+    // yellow marks the most promising structure at the depth you want.
+    function spotScore(elev, nodata, w, h, cellsize, param, out) {
+        const target = Math.max(10.0, param);
+        const sigma = Math.max(0.5, SPOT_FEATURE_M / cellsize);
+        const bg  = gaussianBlur(elev, w, h, sigma);     // 'bb'
+        const deg = slopeDegrees(elev, w, h, cellsize);  // 'slpOut'
+        const invR = 1.0 / Math.max(0.05 * SPOT_FEATURE_M, 1e-3);
+        const invTol = 1.0 / SPOT_TOL_FT;
+        const invSlope = 1.0 / SPOT_SLOPE_MAX_DEG;
         for (let i = 0; i < elev.length; i++) {
+            const di = i * 4;
             const e = elev[i];
-            if (e >= 0) {
-                idx[i] = 0;
-            } else {
-                let s = ((-e * M_TO_FT) * inv_band | 0) + 1;
-                if (s < 1) s = 1;
-                else if (s > DEPTH_PALETTE_LEN - 1) s = DEPTH_PALETTE_LEN - 1;
-                idx[i] = s;
+            if (e >= 0) {  // land (nodata is punched to alpha 0 by the caller)
+                out[di] = 0; out[di+1] = 0; out[di+2] = 0; out[di+3] = 0;
+                continue;
             }
+            const depth_ft = -e * M_TO_FT;
+            let R = Math.abs(e - bg[i]) * invR; if (R > 1) R = 1;
+            let S = deg[i] * invSlope;          if (S > 1) S = 1;
+            const d = (depth_ft - target) * invTol;
+            const P = Math.exp(-(d * d));
+            let score = (SPOT_R_WEIGHT * R + SPOT_S_WEIGHT * S) * P;
+            if (score < 0) score = 0; else if (score > 1) score = 1;
+            const li = ((score * 255) | 0) * 3;
+            out[di]     = INFERNO_LUT[li];
+            out[di + 1] = INFERNO_LUT[li + 1];
+            out[di + 2] = INFERNO_LUT[li + 2];
+            out[di + 3] = smoothstep(0.2, 0.5, score) * 255;
         }
-        return idx;
     }
 
-    function depthBands(elev, nodata, w, h, cellsize, param, out) {
-        const band_ft = Math.max(0.5, param);
-        const idx = depthBandIndex(elev, w, h, band_ft);
+    // depth-contours — calm chart view. Smooth viridis depth fill (auto-
+    // scaled to the deepest water in the tile) with dark contour lines drawn
+    // wherever the contour band changes. Merges the old depth + depth-bands.
+    function depthContours(elev, nodata, w, h, cellsize, param, out) {
+        const interval = Math.max(1.0, param);
+        const n = w * h;
 
-        // Fill base palette colour for each pixel.
-        for (let i = 0; i < idx.length; i++) {
-            const p = idx[i] * 4;
-            const di = i * 4;
-            out[di]     = DEPTH_PALETTE[p];
-            out[di + 1] = DEPTH_PALETTE[p + 1];
-            out[di + 2] = DEPTH_PALETTE[p + 2];
-            out[di + 3] = DEPTH_PALETTE[p + 3];
+        // One reduce pass for the per-tile depth ceiling (NaN nodata is
+        // pre-zeroed → land/nodata read as depth 0 and don't inflate it).
+        let maxDepth = 0;
+        for (let i = 0; i < n; i++) {
+            const e = elev[i];
+            if (e < 0) { const dft = -e * M_TO_FT; if (dft > maxDepth) maxDepth = dft; }
         }
-        // Black contour wherever the band index changes (right or below).
+        if (maxDepth < 1e-3) maxDepth = CONTOUR_FALLBACK_MAXFT;
+        const invMax = 1.0 / maxDepth;
+        const invInterval = 1.0 / interval;
+
+        // Band index per pixel (land = -1) so edges read across the shoreline.
+        const band = _i32('cBand', n);
+        for (let i = 0; i < n; i++) {
+            const e = elev[i];
+            band[i] = e < 0 ? Math.floor(-e * M_TO_FT * invInterval) : -1;
+        }
+
+        const keep = 1 - CONTOUR_MIX;
         for (let y = 0; y < h; y++) {
             for (let x = 0; x < w; x++) {
                 const i = y * w + x;
-                let edge = false;
-                if (x < w - 1 && idx[i] !== idx[i + 1]) edge = true;
-                else if (y < h - 1 && idx[i] !== idx[i + w]) edge = true;
-                if (edge) {
-                    const di = i * 4;
-                    out[di] = 0; out[di+1] = 0; out[di+2] = 0; out[di+3] = 255;
+                const di = i * 4;
+                const e = elev[i];
+                if (e >= 0) {  // land transparent
+                    out[di] = 0; out[di+1] = 0; out[di+2] = 0; out[di+3] = 0;
+                    continue;
                 }
+                let t = -e * M_TO_FT * invMax; if (t > 1) t = 1;
+                const li = ((t * 255) | 0) * 3;
+                let r = VIRIDIS_LUT[li], g = VIRIDIS_LUT[li + 1], b = VIRIDIS_LUT[li + 2];
+                const b0 = band[i];
+                let edge = false;
+                if (x < w - 1 && band[i + 1] !== b0) edge = true;
+                else if (y < h - 1 && band[i + w] !== b0) edge = true;
+                if (edge) {
+                    r = r * keep + CONTOUR_LINE[0] * CONTOUR_MIX;
+                    g = g * keep + CONTOUR_LINE[1] * CONTOUR_MIX;
+                    b = b * keep + CONTOUR_LINE[2] * CONTOUR_MIX;
+                }
+                out[di] = r; out[di + 1] = g; out[di + 2] = b; out[di + 3] = 255;
             }
-        }
-    }
-
-    function hillshadeOnly(elev, nodata, w, h, cellsize, param, out) {
-        const exaggeration = Math.max(1.0, param);
-        const hs = hillshade(elev, w, h, cellsize, exaggeration);
-        for (let i = 0; i < hs.length; i++) {
-            const v = (hs[i] * 255) | 0;
-            const di = i * 4;
-            out[di] = v; out[di+1] = v; out[di+2] = v; out[di+3] = 255;
-        }
-    }
-
-    function slopeAnalysis(elev, nodata, w, h, cellsize, param, out) {
-        const max_deg = Math.max(2.0, param);
-        const deg = slopeDegrees(elev, w, h, cellsize);
-        const inv = (SLOPE_PALETTE_LEN - 1) / max_deg;
-        for (let i = 0; i < deg.length; i++) {
-            let s = (deg[i] * inv) | 0;
-            if (s < 0) s = 0;
-            else if (s > SLOPE_PALETTE_LEN - 1) s = SLOPE_PALETTE_LEN - 1;
-            const p = s * 4;
-            const di = i * 4;
-            out[di]     = SLOPE_PALETTE[p];
-            out[di + 1] = SLOPE_PALETTE[p + 1];
-            out[di + 2] = SLOPE_PALETTE[p + 2];
-            // Mute slope on land slightly (let basemap show through).
-            out[di + 3] = elev[i] >= 0 ? 80 : 255;
-        }
-    }
-
-    function roughness(elev, nodata, w, h, cellsize, param, out) {
-        const feature_scale_m = Math.max(2.0, param);
-        const sigma_px = Math.max(0.5, feature_scale_m / cellsize);
-        const bg = gaussianBlur(elev, w, h, sigma_px);
-        const full_white = Math.max(0.05 * feature_scale_m, 1e-3);
-        const inv_full = 1.0 / full_white;
-        for (let i = 0; i < elev.length; i++) {
-            const r = Math.abs(elev[i] - bg[i]);
-            let v = r * inv_full;
-            if (v < 0) v = 0; else if (v > 1) v = 1;
-            const g = (v * 255) | 0;
-            const di = i * 4;
-            out[di] = g; out[di+1] = g; out[di+2] = g; out[di+3] = 255;
         }
     }
 
     // ─── Public dispatch ────────────────────────────────────────────────
 
     self.FFAnalyses = {
-        'color-relief':  colorRelief,
-        'depth':         depthSmooth,
-        'depth-bands':   depthBands,
-        'hillshade':     hillshadeOnly,
-        'slope':         slopeAnalysis,
-        'roughness':     roughness,
+        'color-relief':    colorRelief,
+        'texture-relief':  textureRelief,
+        'structure':       structure,
+        'spot-score':      spotScore,
+        'depth-contours':  depthContours,
     };
 })();

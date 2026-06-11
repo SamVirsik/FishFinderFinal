@@ -18,8 +18,9 @@ Each public analysis takes:
 
 All return a PIL.Image in 'RGBA'.
 
-The set is intentionally small (6 analyses), each visually and analytically
-distinct from the others.
+The set is intentionally small (5 analyses), each visually and analytically
+distinct from the others. These mirror static/analyses.js 1:1 — keep them
+visually aligned if you change either side.
 """
 
 import numpy as np
@@ -28,6 +29,31 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter
 
 M_TO_FT = 3.28084
+
+# ---------------------------------------------------------------------------
+# Tuning constants (mirror static/analyses.js)
+# ---------------------------------------------------------------------------
+
+# texture-relief
+TEXTURE_VERT_EXAG = 5      # fixed hillshade exaggeration
+TEXTURE_K         = 0.6    # detail-modulation strength
+# structure (curvature)
+STRUCT_VERT_EXAG     = 5      # base hillshade exaggeration
+STRUCT_CURV_AMP      = 2.0    # m — curvature that saturates the ramp
+STRUCT_BASE_CONTRAST = 0.7    # base hillshade contrast under colour
+STRUCT_ALPHA         = 0.85   # max curvature-colour opacity
+STRUCT_CONCAVE = np.array([40, 110, 215], dtype=np.float32)  # blue (L>0)
+STRUCT_CONVEX  = np.array([210, 70, 50],  dtype=np.float32)  # red  (L<0)
+# spot-score
+SPOT_FEATURE_M     = 40     # fixed roughness feature scale (m)
+SPOT_TOL_FT        = 12     # depth tolerance around target (ft)
+SPOT_R_WEIGHT      = 0.6    # roughness weight in score
+SPOT_S_WEIGHT      = 0.4    # slope weight in score
+SPOT_SLOPE_MAX_DEG = 45     # slope that maps to S=1
+# depth-contours
+CONTOUR_FALLBACK_MAXFT = 300                               # tile with no water
+CONTOUR_LINE = np.array([20, 30, 40], dtype=np.float32)    # dark line colour
+CONTOUR_MIX  = 0.7                                         # blend toward line
 
 
 # ---------------------------------------------------------------------------
@@ -54,20 +80,6 @@ DEPTH_PALETTE = np.array([
 # land to be visible (and the hillshade is going to darken it anyway).
 LAND_DEPTH_PALETTE = DEPTH_PALETTE.copy()
 LAND_DEPTH_PALETTE[0] = (139, 69, 19, 255)
-
-# Slope palette: cool green → yellow → red → purple as steepness rises.
-SLOPE_PALETTE = np.array([
-    (220, 255, 220, 255), (184, 255, 184, 255),
-    (140, 255, 140, 255), (100, 255, 100, 255),
-    (255, 255, 100, 255), (255, 230,  50, 255),
-    (255, 200,   0, 255), (255, 160,   0, 255),
-    (255, 120,   0, 255), (255,  80,   0, 255),
-    (255,  40,   0, 255), (220,   0, 120, 255),
-    (160,   0, 180, 255),
-], dtype=np.uint8)
-
-CONTOUR_COLOR = np.array([0, 0, 0, 255], dtype=np.uint8)
-
 
 # ---------------------------------------------------------------------------
 # Common helpers
@@ -114,20 +126,10 @@ def _hillshade(elev_m, cellsize_m, *, azimuth=315.0, altitude=45.0,
     return np.clip(hs, 0.0, 1.0).astype(np.float32)
 
 
-def _depth_band_index(depth_ft, band_ft, palette_len, land_mask):
-    """Map depth (ft) to palette slot. Slot 0 reserved for land."""
-    idx = (depth_ft / max(band_ft, 1e-3)).astype(np.int32, copy=False) + 1
-    np.clip(idx, 1, palette_len - 1, out=idx)
-    idx[land_mask] = 0
-    return idx
-
-
-def _band_edge_mask(idx):
-    """Pixels whose band differs from the right or below neighbour."""
-    mask = np.zeros(idx.shape, dtype=bool)
-    mask[:-1, :] |= idx[:-1, :] != idx[1:, :]
-    mask[:, :-1] |= idx[:, :-1] != idx[:, 1:]
-    return mask
+def _smoothstep(e0, e1, x):
+    """GLSL-style smoothstep applied element-wise to an array."""
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
 
 
 def _to_rgba(rgb, alpha=255):
@@ -188,88 +190,108 @@ def color_relief(elev_m, cellsize_m, param,
     return Image.fromarray(out, mode='RGBA')
 
 
-def depth_smooth(elev_m, cellsize_m, param):
+def texture_relief(elev_m, cellsize_m, param):
     """
-    Continuous viridis depth gradient. `param` = max depth shown (ft);
-    deeper pixels saturate to the deep colour. Land is transparent.
+    Detail-enhanced shaded relief. A hillshade carries the macro form; a
+    high-pass residual (depth minus its blurred self at the chosen feature
+    scale) modulates luminance so wrecks, ledges and rubble pop. Warm-grey
+    tint. `param` = feature scale in METRES. Replaces hillshade + roughness.
     """
-    max_ft = max(10.0, float(param))
+    feature_scale = max(5.0, float(param))
+    sigma = max(0.5, feature_scale / cellsize_m)
+    bg = gaussian_filter(elev_m, sigma, mode='nearest')
+    hs = _hillshade(elev_m, cellsize_m, exaggeration=TEXTURE_VERT_EXAG)
+
+    dnorm = np.clip((elev_m - bg) / max(0.05 * feature_scale, 1e-3), -1.0, 1.0)
+    lum = np.clip(hs * (1 + TEXTURE_K * dnorm), 0.0, 1.0) * 255.0
+    rgb = np.stack([lum, lum * 0.97, lum * 0.92], axis=-1)
+    return _to_rgba(np.clip(rgb, 0, 255).astype(np.uint8))
+
+
+def structure(elev_m, cellsize_m, param):
+    """
+    Diverging concave/convex (curvature) map over a faint hillshade. Blue =
+    concave (holes, channels), red = convex (humps, ledges). Flat ground
+    stays near-transparent so the relief reads through. `param` = feature
+    scale in METRES (denoise pre-blur). Replaces slope.
+    """
+    feature_scale = max(5.0, float(param))
+    sigma = max(0.5, feature_scale / cellsize_m)
+    zb = gaussian_filter(elev_m, sigma, mode='nearest')
+    hs = _hillshade(elev_m, cellsize_m, exaggeration=STRUCT_VERT_EXAG)
+
+    # Laplacian of elevation (+up) with replicated edges. Concave → positive.
+    up = np.empty_like(zb); up[1:, :] = zb[:-1, :]; up[0, :] = zb[0, :]
+    dn = np.empty_like(zb); dn[:-1, :] = zb[1:, :]; dn[-1, :] = zb[-1, :]
+    lf = np.empty_like(zb); lf[:, 1:] = zb[:, :-1]; lf[:, 0] = zb[:, 0]
+    rt = np.empty_like(zb); rt[:, :-1] = zb[:, 1:]; rt[:, -1] = zb[:, -1]
+    lap = (up + dn + lf + rt - 4 * zb) / (cellsize_m * cellsize_m)
+
+    t = np.clip(lap * feature_scale * feature_scale / STRUCT_CURV_AMP, -1.0, 1.0)
+    base = (hs * STRUCT_BASE_CONTRAST * 255.0)[..., None]
+    a = (np.abs(t) * STRUCT_ALPHA)[..., None]
+    col = np.where((t >= 0)[..., None], STRUCT_CONCAVE, STRUCT_CONVEX)
+    rgb = col * a + base * (1 - a)
+    return _to_rgba(np.clip(rgb, 0, 255).astype(np.uint8))
+
+
+def spot_score(elev_m, cellsize_m, param):
+    """
+    Headline fusion. Roughness + slope, gated by a Gaussian preference for a
+    reachable target depth, painted in inferno. Low scores fade out so the
+    basemap reads through; bright yellow = best structure at the depth you
+    want. `param` = target depth in FEET.
+    """
+    target = max(10.0, float(param))
+    sigma = max(0.5, SPOT_FEATURE_M / cellsize_m)
+    bg = gaussian_filter(elev_m, sigma, mode='nearest')
+    deg = _slope_degrees(elev_m, cellsize_m)
     depth_ft = _depth_below_sea_ft(elev_m)
     land = _land_mask(elev_m)
 
-    norm = np.clip(depth_ft / max_ft, 0.0, 1.0)
-    rgb = (plt.get_cmap('viridis')(norm)[..., :3] * 255).astype(np.uint8)
+    rough = np.clip(np.abs(elev_m - bg) / max(0.05 * SPOT_FEATURE_M, 1e-3), 0.0, 1.0)
+    s = np.clip(deg / SPOT_SLOPE_MAX_DEG, 0.0, 1.0)
+    pref = np.exp(-(((depth_ft - target) / SPOT_TOL_FT) ** 2))
+    score = np.clip((SPOT_R_WEIGHT * rough + SPOT_S_WEIGHT * s) * pref, 0.0, 1.0)
+    score[land] = 0.0
+
+    rgb = (plt.get_cmap('inferno')(score)[..., :3] * 255).astype(np.uint8)
+    alpha = (_smoothstep(0.2, 0.5, score) * 255).astype(np.uint8)
 
     out = np.empty(rgb.shape[:-1] + (4,), dtype=np.uint8)
     out[..., :3] = rgb
-    out[..., 3] = np.where(land, 0, 255).astype(np.uint8)
+    out[..., 3] = np.where(land, 0, alpha).astype(np.uint8)
     return Image.fromarray(out, mode='RGBA')
 
 
-def depth_bands(elev_m, cellsize_m, param):
+def depth_contours(elev_m, cellsize_m, param):
     """
-    Discrete depth bands with crisp black contour lines on every band edge.
-    `param` = band size in feet (e.g. 10 → one colour step every 10 ft).
+    Calm chart view. Smooth viridis depth fill (auto-scaled to the deepest
+    water in the tile) with dark contour lines wherever the contour band
+    changes. `param` = contour interval in FEET. Merges depth + depth-bands.
     """
-    band_ft = max(0.5, float(param))
+    interval = max(1.0, float(param))
     depth_ft = _depth_below_sea_ft(elev_m)
     land = _land_mask(elev_m)
 
-    idx = _depth_band_index(depth_ft, band_ft, DEPTH_PALETTE.shape[0], land)
-    rgba = DEPTH_PALETTE[idx].copy()
-    rgba[_band_edge_mask(idx)] = CONTOUR_COLOR
-    return Image.fromarray(rgba, mode='RGBA')
+    max_depth = float(depth_ft.max()) if depth_ft.size else 0.0
+    if max_depth < 1e-3:
+        max_depth = CONTOUR_FALLBACK_MAXFT
 
+    norm = np.clip(depth_ft / max_depth, 0.0, 1.0)
+    rgb = (plt.get_cmap('viridis')(norm)[..., :3] * 255).astype(np.float32)
 
-def hillshade(elev_m, cellsize_m, param):
-    """
-    Pure greyscale shaded relief on a black background. Reveals sea-floor
-    structure without any depth colouring. `param` = vertical exaggeration.
-    """
-    exaggeration = max(1.0, float(param))
-    hs = _hillshade(elev_m, cellsize_m, exaggeration=exaggeration)
-    return _grey_to_rgba(hs * 255.0)
+    # Contour band per pixel (land = -1 so the shoreline reads as an edge).
+    band = np.where(land, -1, np.floor(depth_ft / interval)).astype(np.int32)
+    edge = np.zeros(band.shape, dtype=bool)
+    edge[:, :-1] |= band[:, :-1] != band[:, 1:]
+    edge[:-1, :] |= band[:-1, :] != band[1:, :]
+    rgb[edge] = rgb[edge] * (1 - CONTOUR_MIX) + CONTOUR_LINE * CONTOUR_MIX
 
-
-def slope(elev_m, cellsize_m, param):
-    """
-    Real slope angle (degrees from horizontal). `param` = max slope on the
-    colour scale: anything steeper saturates to purple. Smaller `param`
-    exaggerates subtle drop-offs; larger smooths them out.
-    """
-    max_deg = max(2.0, float(param))
-    deg = _slope_degrees(elev_m, cellsize_m)
-    # Land alpha is handled by the LayerGenerator nodata mask, but a clear
-    # land/water break still helps; mute slope on land slightly.
-    land = _land_mask(elev_m)
-
-    # Map [0..max_deg] across palette slots.
-    idx = (deg / max_deg * (SLOPE_PALETTE.shape[0] - 1)).astype(np.int32)
-    np.clip(idx, 0, SLOPE_PALETTE.shape[0] - 1, out=idx)
-    rgba = SLOPE_PALETTE[idx].copy()
-    rgba[land, 3] = 80  # let basemap show through on land
-    return Image.fromarray(rgba, mode='RGBA')
-
-
-def roughness(elev_m, cellsize_m, param):
-    """
-    Local sea-floor roughness — the magnitude of elevation deviation from a
-    smoothed background at a chosen feature scale. Bright = rough (wrecks,
-    ledges, rubble); dark = smooth. `param` = feature scale in METRES; we
-    convert to a Gaussian sigma in pixels for the local mean.
-    """
-    feature_scale_m = max(2.0, float(param))
-    sigma_px = max(0.5, feature_scale_m / cellsize_m)
-
-    background = gaussian_filter(elev_m, sigma_px, mode='nearest')
-    resid_m = np.abs(elev_m - background)
-
-    # Express the dynamic range relative to feature scale: an excursion of
-    # ~5% of the feature scale (e.g. 2.5 m on a 50 m feature) reads as full
-    # white. This keeps the visual range comparable across zoom levels.
-    full_white = 0.05 * feature_scale_m
-    grey = np.clip(resid_m / max(full_white, 1e-3), 0.0, 1.0) * 255.0
-    return _grey_to_rgba(grey)
+    out = np.empty(rgb.shape[:-1] + (4,), dtype=np.uint8)
+    out[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    out[..., 3] = np.where(land, 0, 255).astype(np.uint8)
+    return Image.fromarray(out, mode='RGBA')
 
 
 # ---------------------------------------------------------------------------
@@ -277,10 +299,9 @@ def roughness(elev_m, cellsize_m, param):
 # ---------------------------------------------------------------------------
 
 ANALYSES = {
-    'color-relief':   color_relief,
-    'depth':          depth_smooth,
-    'depth-bands':    depth_bands,
-    'hillshade':      hillshade,
-    'slope':          slope,
-    'roughness':      roughness,
+    'color-relief':    color_relief,
+    'texture-relief':  texture_relief,
+    'structure':       structure,
+    'spot-score':      spot_score,
+    'depth-contours':  depth_contours,
 }

@@ -154,11 +154,10 @@
             </div>
             <select id="analysis-dropdown-{{layer['id']}}" class="select">
                 <option value="color-relief" selected>Color Relief — depth + shading</option>
-                <option value="hillshade">Hillshade — pure shaded relief</option>
-                <option value="roughness">Roughness — wreck/ledge finder</option>
-                <option value="slope">Slope — true steepness (degrees)</option>
-                <option value="depth">Depth Map — smooth gradient</option>
-                <option value="depth-bands">Depth Bands — stepped + contours</option>
+                <option value="texture-relief">Texture Relief — detail-enhanced shading</option>
+                <option value="structure">Structure — concave/convex curvature</option>
+                <option value="spot-score">Spot Score — best structure at depth</option>
+                <option value="depth-contours">Depth + Contours — chart view</option>
             </select>
             <p class="field-hint" id="analysis-hint-{{layer['id']}}"></p>
         </div>

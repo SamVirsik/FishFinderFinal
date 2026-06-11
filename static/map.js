@@ -193,40 +193,33 @@ const ANALYSES = {
         intro: "Coloured depth with overlaid hillshade. Default starting view.",
         pretty: "Color Relief",
     },
-    "hillshade": {
-        label: "Vertical exaggeration", unit: "×",
-        min: 1, max: 30, step: 1, default: 5,
-        hint: "Higher = more contrast between flat and steep ground.",
-        intro: "Pure greyscale shaded relief. Reveals structure without colour.",
-        pretty: "Hillshade",
+    "texture-relief": {
+        label: "Feature scale", unit: " m",
+        min: 5, max: 500, step: 5, default: 40,
+        hint: "Size of the features to sharpen. Smaller = finer texture.",
+        intro: "Detail-enhanced shaded relief. Bright texture = wrecks, ledges, rubble.",
+        pretty: "Texture Relief",
     },
-    "roughness": {
+    "structure": {
         label: "Feature scale", unit: " m",
         min: 5, max: 500, step: 5, default: 50,
-        hint: "Size of the features you want to highlight. Smaller = finer texture.",
-        intro: "High-pass detail. Bright = rough (wrecks, ledges, rubble).",
-        pretty: "Roughness",
+        hint: "Size of the structure to highlight. Smaller = finer detail.",
+        intro: "Curvature map: blue = holes/channels (concave), red = humps/ledges (convex).",
+        pretty: "Structure",
     },
-    "slope": {
-        label: "Max slope on scale", unit: "°",
-        min: 5, max: 90, step: 1, default: 30,
-        hint: "Smaller value exaggerates subtle slopes; larger smooths them.",
-        intro: "True slope angle. Cool = flat, hot = steep, purple = vertical.",
-        pretty: "Slope",
+    "spot-score": {
+        label: "Target depth", unit: " ft",
+        min: 10, max: 200, step: 5, default: 40,
+        hint: "Depth you want to fish. Score peaks at structure near this depth.",
+        intro: "Fusion score: rough + steep structure gated to your target depth. Bright = best.",
+        pretty: "Spot Score",
     },
-    "depth": {
-        label: "Max depth shown", unit: " ft",
-        min: 30, max: 3000, step: 10, default: 300,
-        hint: "Pixels deeper than this saturate to the deepest colour.",
-        intro: "Continuous depth gradient. Good for seeing overall basin shape.",
-        pretty: "Depth Map",
-    },
-    "depth-bands": {
-        label: "Band size", unit: " ft",
+    "depth-contours": {
+        label: "Contour interval", unit: " ft",
         min: 1, max: 100, step: 1, default: 10,
-        hint: "Width of each colour band. Small = many lines, lots of detail.",
-        intro: "Stepped colour bands with crisp contour lines on every edge.",
-        pretty: "Depth Bands",
+        hint: "Depth between contour lines. Small = many lines, lots of detail.",
+        intro: "Calm chart view: smooth depth fill with contour lines.",
+        pretty: "Depth + Contours",
     },
 };
 
